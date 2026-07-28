@@ -10,6 +10,7 @@ import {
   SYSTEM_AUTO_SWEEP_LABEL,
   AUTO_SWEEP_CLEARED_ACTION,
   buildAutoSweepClearedRow,
+  confirmAppDialog,
 } from './utils.js';
 
 // Role hierarchy: what each role can access
@@ -89,54 +90,6 @@ const ROLE_ACCESS = {
 // Relocating them to <body> lets them render on top regardless of the active view.
 function ensureModalTopLevel(el) {
   if (el && el.parentElement !== document.body) document.body.appendChild(el);
-}
-
-/**
- * In-app confirm dialog. Do NOT use window.confirm() for punch deletes —
- * Chromium/Electron's "Prevent this page from creating additional dialogs"
- * checkbox makes later confirm() calls always return false, so Delete appears
- * broken with no toast or error.
- */
-function confirmAppDialog({
-  title = 'Confirm',
-  message = 'Are you sure?',
-  confirmLabel = 'Delete',
-} = {}) {
-  return new Promise((resolve) => {
-    const modal = document.getElementById('modal-confirm');
-    const titleEl = document.getElementById('confirm-title');
-    const msgEl = document.getElementById('confirm-message');
-    const btnOk = document.getElementById('btn-confirm-ok');
-    const btnCancel = document.getElementById('btn-confirm-cancel');
-    if (!modal || !btnOk || !btnCancel) {
-      resolve(window.confirm(message));
-      return;
-    }
-
-    if (titleEl) titleEl.textContent = title;
-    if (msgEl) msgEl.textContent = message;
-    btnOk.textContent = confirmLabel;
-
-    ensureModalTopLevel(modal);
-
-    const finish = (ok) => {
-      modal.classList.add('hidden');
-      btnOk.removeEventListener('click', onOk);
-      btnCancel.removeEventListener('click', onCancel);
-      modal.removeEventListener('click', onBackdrop);
-      resolve(ok);
-    };
-    const onOk = () => finish(true);
-    const onCancel = () => finish(false);
-    const onBackdrop = (e) => {
-      if (e.target === modal) finish(false);
-    };
-
-    btnOk.addEventListener('click', onOk);
-    btnCancel.addEventListener('click', onCancel);
-    modal.addEventListener('click', onBackdrop);
-    modal.classList.remove('hidden');
-  });
 }
 
 // Show the manager-password field only when a leadership (non-Employee) role is selected

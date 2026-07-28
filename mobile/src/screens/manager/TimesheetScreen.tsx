@@ -97,45 +97,52 @@ export function TimesheetScreen() {
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete', style: 'destructive', onPress: async () => {
-          const editedBy = log.edited_by_manager != null ? String(log.edited_by_manager) : '';
-          const isAutoSweepOut =
-            (log.action === 'OUT' || log.action === 'CLOCK_OUT') &&
-            editedBy.includes('System Auto-Sweep');
+          try {
+            const editedBy = log.edited_by_manager != null ? String(log.edited_by_manager) : '';
+            const isAutoSweepOut =
+              (log.action === 'OUT' || log.action === 'CLOCK_OUT') &&
+              editedBy.includes('System Auto-Sweep');
 
-          // Marker first so a concurrent web sweep cannot recreate the OUT.
-          if (isAutoSweepOut) {
-            const sweepDate = new Date(log.created_at);
-            const windowStart = new Date(sweepDate.getTime() - 20 * 3600000).toISOString();
-            const windowEnd = new Date(sweepDate.getTime() + 20 * 3600000).toISOString();
-            const { data: ins } = await supabase
-              .from('time_logs')
-              .select('created_at')
-              .eq('user_id', log.user_id)
-              .in('action', ['IN', 'CLOCK_IN', 'END_LUNCH', 'START_LUNCH'])
-              .gte('created_at', windowStart)
-              .lte('created_at', windowEnd)
-              .order('created_at', { ascending: false })
-              .limit(1);
-            const inAt = ins?.[0]?.created_at || log.created_at;
-            await supabase.from('time_logs').insert({
-              user_id: log.user_id,
-              action: 'AUTO_SWEEP_CLEARED',
-              created_at: new Date(new Date(inAt).getTime() + 1000).toISOString(),
-              edited_by_manager: 'Manager cleared auto-sweep',
-            });
+            // Marker first so a concurrent web/server sweep cannot recreate the OUT.
+            if (isAutoSweepOut) {
+              const sweepDate = new Date(log.created_at);
+              const windowStart = new Date(sweepDate.getTime() - 20 * 3600000).toISOString();
+              const windowEnd = new Date(sweepDate.getTime() + 20 * 3600000).toISOString();
+              const { data: ins, error: inErr } = await supabase
+                .from('time_logs')
+                .select('created_at')
+                .eq('user_id', log.user_id)
+                .in('action', ['IN', 'CLOCK_IN', 'END_LUNCH', 'START_LUNCH'])
+                .gte('created_at', windowStart)
+                .lte('created_at', windowEnd)
+                .order('created_at', { ascending: false })
+                .limit(1);
+              if (inErr) throw inErr;
+              const inAt = ins?.[0]?.created_at || log.created_at;
+              const { error: markerErr } = await supabase.from('time_logs').insert({
+                user_id: log.user_id,
+                action: 'AUTO_SWEEP_CLEARED',
+                created_at: new Date(new Date(inAt).getTime() + 1000).toISOString(),
+                edited_by_manager: 'Manager cleared auto-sweep',
+              });
+              if (markerErr) throw markerErr;
+            }
+
+            const { error: delErr } = await supabase.from('time_logs').delete().eq('id', log.id);
+            if (delErr) throw delErr;
+
+            if (selectedEmployee) {
+              const updated = {
+                ...selectedEmployee,
+                logs: selectedEmployee.logs.filter((l: TimeLog) => l.id !== log.id),
+              };
+              updated.hours = calcHours(updated.logs);
+              setSelectedEmployee(updated);
+            }
+            loadTimesheet();
+          } catch (err: any) {
+            Alert.alert('Delete failed', err?.message || 'Could not delete this punch. Try again.');
           }
-
-          await supabase.from('time_logs').delete().eq('id', log.id);
-
-          if (selectedEmployee) {
-            const updated = {
-              ...selectedEmployee,
-              logs: selectedEmployee.logs.filter((l: TimeLog) => l.id !== log.id),
-            };
-            updated.hours = calcHours(updated.logs);
-            setSelectedEmployee(updated);
-          }
-          loadTimesheet();
         },
       },
     ]);
