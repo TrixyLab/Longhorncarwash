@@ -30,7 +30,7 @@ function parseTimePart(timeStr: string): {
   const isAM = t.includes('am') || (t.endsWith('a') && !t.includes('pm'));
   t = t.replace(/[a-z]/g, '');
   const [hStr, mStr] = t.split(':');
-  let h = parseInt(hStr, 10);
+  const h = parseInt(hStr, 10);
   let m = parseInt(mStr || '0', 10);
   if (isNaN(h)) return null;
   if (isNaN(m)) m = 0;
