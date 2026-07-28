@@ -52,6 +52,28 @@ export const state = {
 const CLOCKED_IN_ACTIONS = ['IN', 'END_LUNCH', 'CLOCK_IN'];
 const CLOCKED_OUT_ACTIONS = ['OUT', 'CLOCK_OUT'];
 
+/** Label written on forced clock-outs from performMidnightSweep. */
+export const SYSTEM_AUTO_SWEEP_LABEL = 'System Auto-Sweep';
+
+/**
+ * Non-punch marker inserted when a manager deletes a System Auto-Sweep OUT.
+ * Prevents the hourly sweep from recreating the OUT for that same open IN.
+ * Ignored by hours math and punch-status queries (not a PUNCH_ACTION).
+ */
+export const AUTO_SWEEP_CLEARED_ACTION = 'AUTO_SWEEP_CLEARED';
+
+/** Build the time_logs row that suppresses re-sweep after a manager delete. */
+export function buildAutoSweepClearedRow(userId, openInCreatedAt) {
+  const inMs = new Date(openInCreatedAt).getTime();
+  return {
+    user_id: userId,
+    action: AUTO_SWEEP_CLEARED_ACTION,
+    // Place just after the IN so "cleared after this open punch" checks match.
+    created_at: new Date(inMs + 1000).toISOString(),
+    edited_by_manager: 'Manager cleared auto-sweep',
+  };
+}
+
 // Pure validator for a punch transition. Given the employee's last recorded
 // action (or null/undefined if they have none) and the action they're
 // attempting, returns a human-readable error string if the transition is

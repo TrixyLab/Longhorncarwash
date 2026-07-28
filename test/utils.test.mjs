@@ -17,6 +17,8 @@ import {
   getDistanceInMeters,
   getPunchTransitionError,
   getMissedPunchRequestError,
+  buildAutoSweepClearedRow,
+  AUTO_SWEEP_CLEARED_ACTION,
 } from '../modules/utils.js';
 
 const log = (action, t) => ({ action, created_at: t });
@@ -191,6 +193,15 @@ test('getAutoOutIso: unscheduled Sunday fallback caps at 6pm store close', () =>
   const clockIn = new Date('2026-07-26T18:00:00Z'); // Sun 1:00 PM CDT
   const iso = getAutoOutIso(clockIn, null);
   assert.equal(iso, '2026-07-26T23:00:00.000Z'); // 6:00 PM CDT
+});
+
+test('buildAutoSweepClearedRow: places marker one second after the open IN', () => {
+  const inAt = '2026-07-27T18:59:00.000Z';
+  const row = buildAutoSweepClearedRow('user-1', inAt);
+  assert.equal(row.user_id, 'user-1');
+  assert.equal(row.action, AUTO_SWEEP_CLEARED_ACTION);
+  assert.equal(row.created_at, '2026-07-27T18:59:01.000Z');
+  assert.equal(row.edited_by_manager, 'Manager cleared auto-sweep');
 });
 
 test('getStartOfWeek: always a Wednesday at midnight', () => {

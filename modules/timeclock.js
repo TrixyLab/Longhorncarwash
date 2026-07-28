@@ -8,6 +8,8 @@ import {
   hasForgottenClockOut,
   getPunchTransitionError,
   getMissedPunchRequestError,
+  SYSTEM_AUTO_SWEEP_LABEL,
+  AUTO_SWEEP_CLEARED_ACTION,
 } from './utils.js';
 
 // --- Camera (Anti-Buddy Punching) ---
@@ -1101,6 +1103,17 @@ export function init() {
 
             // Only sweep if the employee has actually FORGOTTEN to clock out
             if (hasForgottenClockOut(logDate, userShiftStr, now)) {
+              // Manager deleted a prior System Auto-Sweep for this open IN —
+              // do not recreate it.
+              const { data: cleared } = await window.supabaseClient
+                .from('time_logs')
+                .select('id')
+                .eq('user_id', u.id)
+                .eq('action', AUTO_SWEEP_CLEARED_ACTION)
+                .gt('created_at', log.created_at)
+                .limit(1);
+              if (cleared?.length) continue;
+
               // Re-read latest punch to avoid duplicate OUTs when multiple
               // dashboards run the hourly sweep at the same time.
               const { data: latestRecheck } = await window.supabaseClient
@@ -1125,7 +1138,7 @@ export function init() {
                 user_id: u.id,
                 action: 'OUT',
                 created_at: autoOutIso,
-                edited_by_manager: 'System Auto-Sweep',
+                edited_by_manager: SYSTEM_AUTO_SWEEP_LABEL,
               });
             }
           }
@@ -1227,7 +1240,7 @@ export function init() {
       const { data: badSweeps, error: sweepErr } = await window.supabaseClient
         .from('time_logs')
         .select('id, user_id, created_at')
-        .eq('edited_by_manager', 'System Auto-Sweep')
+        .eq('edited_by_manager', SYSTEM_AUTO_SWEEP_LABEL)
         .order('created_at', { ascending: false })
         .limit(100);
 
