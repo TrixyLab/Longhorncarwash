@@ -91,6 +91,54 @@ function ensureModalTopLevel(el) {
   if (el && el.parentElement !== document.body) document.body.appendChild(el);
 }
 
+/**
+ * In-app confirm dialog. Do NOT use window.confirm() for punch deletes —
+ * Chromium/Electron's "Prevent this page from creating additional dialogs"
+ * checkbox makes later confirm() calls always return false, so Delete appears
+ * broken with no toast or error.
+ */
+function confirmAppDialog({
+  title = 'Confirm',
+  message = 'Are you sure?',
+  confirmLabel = 'Delete',
+} = {}) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('modal-confirm');
+    const titleEl = document.getElementById('confirm-title');
+    const msgEl = document.getElementById('confirm-message');
+    const btnOk = document.getElementById('btn-confirm-ok');
+    const btnCancel = document.getElementById('btn-confirm-cancel');
+    if (!modal || !btnOk || !btnCancel) {
+      resolve(window.confirm(message));
+      return;
+    }
+
+    if (titleEl) titleEl.textContent = title;
+    if (msgEl) msgEl.textContent = message;
+    btnOk.textContent = confirmLabel;
+
+    ensureModalTopLevel(modal);
+
+    const finish = (ok) => {
+      modal.classList.add('hidden');
+      btnOk.removeEventListener('click', onOk);
+      btnCancel.removeEventListener('click', onCancel);
+      modal.removeEventListener('click', onBackdrop);
+      resolve(ok);
+    };
+    const onOk = () => finish(true);
+    const onCancel = () => finish(false);
+    const onBackdrop = (e) => {
+      if (e.target === modal) finish(false);
+    };
+
+    btnOk.addEventListener('click', onOk);
+    btnCancel.addEventListener('click', onCancel);
+    modal.addEventListener('click', onBackdrop);
+    modal.classList.remove('hidden');
+  });
+}
+
 // Show the manager-password field only when a leadership (non-Employee) role is selected
 // in the employee-details editor.
 function toggleEditEmployeePassword() {
@@ -1610,12 +1658,13 @@ export function init() {
   if (btnDeleteEmployee) {
     btnDeleteEmployee.addEventListener('click', async () => {
       if (!state.selectedEmployeeForLogs) return;
-      if (
-        !confirm(
+      const ok = await confirmAppDialog({
+        title: 'Delete Employee',
+        message:
           'Are you ABSOLUTELY sure? This permanently removes the employee and all their time logs.',
-        )
-      )
-        return;
+        confirmLabel: 'Delete Employee',
+      });
+      if (!ok) return;
       try {
         await window.supabaseClient
           .from('time_logs')
@@ -1643,7 +1692,12 @@ export function init() {
 
       if (btnDelete) {
         const logId = btnDelete.dataset.id;
-        if (!confirm('Delete this punch?')) return;
+        const ok = await confirmAppDialog({
+          title: 'Delete Punch',
+          message: 'Delete this punch? This cannot be undone.',
+          confirmLabel: 'Delete Punch',
+        });
+        if (!ok) return;
         try {
           const { data: existing, error: fetchErr } = await window.supabaseClient
             .from('time_logs')

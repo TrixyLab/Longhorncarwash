@@ -1293,6 +1293,20 @@
             </div>
           </div>
 
+          <!-- In-app confirm (avoids Chromium "Prevent this page from creating additional dialogs") -->
+          <div id="modal-confirm" class="modal hidden" style="z-index: 1200;">
+            <div class="modal-content" style="width: 400px; text-align: left;">
+              <h3 id="confirm-title" style="margin-bottom: 10px;">Confirm</h3>
+              <p id="confirm-message" style="margin-bottom: 20px; color: var(--text); line-height: 1.4;"></p>
+              <div class="modal-actions" style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button id="btn-confirm-cancel" class="btn-ghost"
+                  style="border: 1px solid var(--border); padding: 10px 16px;">Cancel</button>
+                <button id="btn-confirm-ok" class="btn-danger"
+                  style="padding: 10px 16px; border: none; border-radius: 8px; cursor: pointer;">Delete</button>
+              </div>
+            </div>
+          </div>
+
           <!-- Approvals Modal -->
           <div id="modal-approvals" class="modal hidden">
             <div class="modal-content" style="width: 800px; max-height: 80vh; overflow-y: auto;">
