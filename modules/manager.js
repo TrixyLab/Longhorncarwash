@@ -7,6 +7,9 @@ import {
   calculateEstimatedTaxes,
   calculatePayWithOvertime,
   downloadCsv,
+  SYSTEM_AUTO_SWEEP_LABEL,
+  AUTO_SWEEP_CLEARED_ACTION,
+  buildAutoSweepClearedRow,
 } from './utils.js';
 
 // Role hierarchy: what each role can access
@@ -1106,6 +1109,28 @@ function exportMonthlyCsv() {
 }
 
 // --- Manage Logs Modal ---
+async function insertAutoSweepClearedMarker(deletedOut) {
+  const IN_LIKE = ['IN', 'CLOCK_IN', 'END_LUNCH', 'START_LUNCH'];
+  const sweepDate = new Date(deletedOut.created_at);
+  const windowStart = new Date(sweepDate.getTime() - 20 * 3600000).toISOString();
+  const windowEnd = new Date(sweepDate.getTime() + 20 * 3600000).toISOString();
+
+  const { data: ins } = await window.supabaseClient
+    .from('time_logs')
+    .select('created_at')
+    .eq('user_id', deletedOut.user_id)
+    .in('action', IN_LIKE)
+    .gte('created_at', windowStart)
+    .lte('created_at', windowEnd)
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  const inAt = ins?.[0]?.created_at || deletedOut.created_at;
+  await window.supabaseClient
+    .from('time_logs')
+    .insert(buildAutoSweepClearedRow(deletedOut.user_id, inAt));
+}
+
 async function loadEmployeeLogs() {
   const manageLogsBody = document.getElementById('manage-logs-body');
   if (!state.selectedEmployeeForLogs || !manageLogsBody) return;
@@ -1118,7 +1143,9 @@ async function loadEmployeeLogs() {
     if (error) throw error;
 
     manageLogsBody.innerHTML = '';
-    data.forEach((log) => {
+    data
+      .filter((log) => log.action !== AUTO_SWEEP_CLEARED_ACTION)
+      .forEach((log) => {
       const time = new Date(log.created_at).toLocaleString('en-US', {
         timeZone: 'America/Chicago',
       });
@@ -1618,8 +1645,22 @@ export function init() {
         const logId = btnDelete.dataset.id;
         if (!confirm('Delete this punch?')) return;
         try {
+          const { data: existing, error: fetchErr } = await window.supabaseClient
+            .from('time_logs')
+            .select('id, user_id, action, created_at, edited_by_manager')
+            .eq('id', logId)
+            .maybeSingle();
+          if (fetchErr) throw fetchErr;
+
+          // Insert the clear marker BEFORE deleting so a concurrent hourly
+          // sweep cannot recreate the OUT in the gap.
+          if (existing?.edited_by_manager === SYSTEM_AUTO_SWEEP_LABEL) {
+            await insertAutoSweepClearedMarker(existing);
+          }
+
           const { error } = await window.supabaseClient.from('time_logs').delete().eq('id', logId);
           if (error) throw error;
+
           showToast('Log deleted successfully');
           await loadEmployeeLogs();
           loadTimesheets();
