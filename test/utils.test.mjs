@@ -92,6 +92,15 @@ test('parseShiftHours: bare numbers infer pm end', () => {
   assert.equal(parseShiftHours('9-5'), 8);
 });
 
+test('parseShiftHours: afternoon bare form 1-8 is 1pm-8pm', () => {
+  assert.equal(parseShiftHours('1-8'), 7);
+  assert.equal(parseShiftHours('2-8'), 6);
+});
+
+test('parseShiftHours: full-day bare form 7-8 is 7am-8pm', () => {
+  assert.equal(parseShiftHours('7-8'), 13);
+});
+
 test('parseShiftHours: off/blank days are zero', () => {
   assert.equal(parseShiftHours('OFF'), 0);
   assert.equal(parseShiftHours('-'), 0);
@@ -101,6 +110,11 @@ test('parseShiftHours: off/blank days are zero', () => {
 test('parseShiftStartTime: returns 24h hour/minute', () => {
   assert.deepEqual(parseShiftStartTime('9am-5pm'), { hour: 9, minute: 0 });
   assert.deepEqual(parseShiftStartTime('2:30pm-6pm'), { hour: 14, minute: 30 });
+});
+
+test('parseShiftStartTime: afternoon bare form uses PM start', () => {
+  assert.deepEqual(parseShiftStartTime('1-8'), { hour: 13, minute: 0 });
+  assert.deepEqual(parseShiftStartTime('2-8'), { hour: 14, minute: 0 });
 });
 
 test('parseShiftStartTime: off/invalid returns null', () => {
@@ -113,6 +127,15 @@ test('parseShiftEndTime: returns 24h hour/minute for end of shift', () => {
   assert.deepEqual(parseShiftEndTime('9-5'), { hour: 17, minute: 0 });
   assert.deepEqual(parseShiftEndTime('8:30am-4:30pm'), { hour: 16, minute: 30 });
   assert.deepEqual(parseShiftEndTime('10am-6pm'), { hour: 18, minute: 0 });
+});
+
+test('parseShiftEndTime: bare and partial am/pm ends resolve to evening', () => {
+  assert.deepEqual(parseShiftEndTime('7-8'), { hour: 20, minute: 0 });
+  assert.deepEqual(parseShiftEndTime('7am-8'), { hour: 20, minute: 0 });
+  assert.deepEqual(parseShiftEndTime('1-8'), { hour: 20, minute: 0 });
+  assert.deepEqual(parseShiftEndTime('1pm-8'), { hour: 20, minute: 0 });
+  assert.deepEqual(parseShiftEndTime('10am-6'), { hour: 18, minute: 0 });
+  assert.deepEqual(parseShiftEndTime('7-6'), { hour: 18, minute: 0 });
 });
 
 test('parseShiftEndTime: off/invalid returns null', () => {
@@ -149,6 +172,25 @@ test('getAutoOutIso: calculates correct scheduled end timestamp', () => {
   const clockIn = new Date('2026-07-21T14:00:00Z'); // 9:00 AM CDT
   const iso = getAutoOutIso(clockIn, '9am-5pm');
   assert.equal(iso, '2026-07-21T22:00:00.000Z'); // 5:00 PM CDT
+});
+
+test('getAutoOutIso: afternoon bare shift 1-8 ends at 8pm not 8am', () => {
+  // Regression: Makhi-style 1:59 PM clock-in with schedule "1-8"
+  const clockIn = new Date('2026-07-27T18:59:00Z'); // 1:59 PM CDT
+  const iso = getAutoOutIso(clockIn, '1-8');
+  assert.equal(iso, '2026-07-28T01:00:00.000Z'); // 8:00 PM CDT Jul 27
+});
+
+test('getAutoOutIso: unscheduled weekday fallback caps at 8pm store close', () => {
+  const clockIn = new Date('2026-07-27T18:59:00Z'); // Mon 1:59 PM CDT
+  const iso = getAutoOutIso(clockIn, null);
+  assert.equal(iso, '2026-07-28T01:00:00.000Z'); // 8:00 PM CDT
+});
+
+test('getAutoOutIso: unscheduled Sunday fallback caps at 6pm store close', () => {
+  const clockIn = new Date('2026-07-26T18:00:00Z'); // Sun 1:00 PM CDT
+  const iso = getAutoOutIso(clockIn, null);
+  assert.equal(iso, '2026-07-26T23:00:00.000Z'); // 6:00 PM CDT
 });
 
 test('getStartOfWeek: always a Wednesday at midnight', () => {

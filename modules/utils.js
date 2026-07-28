@@ -319,85 +319,122 @@ export function checkLocation() {
 }
 
 // --- Schedule Parsing ---
-export function parseShiftStartTime(shiftStr) {
-  if (!shiftStr || typeof shiftStr !== 'string') return null;
-  const s = shiftStr.trim();
-  if (!s || s === '-' || s.toUpperCase() === 'OFF' || s.toUpperCase() === 'OC') return null;
-  const dashIdx = s.indexOf('-');
-  if (dashIdx < 0) return null;
-  const startPart = s.substring(0, dashIdx).trim().toLowerCase();
-  const isPM = startPart.includes('pm') || (startPart.endsWith('p') && !startPart.endsWith('am'));
-  const isAM = startPart.includes('am') || startPart.endsWith('a');
-  const clean = startPart.replace(/[a-z]/g, '');
-  const [hStr, mStr] = clean.split(':');
+// Store hours (America/Chicago): Mon–Sat 7am–8pm, Sunday 7am–6pm.
+// Schedule cells are often typed without am/pm ("7-8", "1-8", "10-6").
+export const STORE_OPEN_HOUR = 7;
+export const STORE_CLOSE_HOUR_WEEKDAY = 20; // 8pm
+export const STORE_CLOSE_HOUR_SUNDAY = 18; // 6pm
+
+function parseShiftTimePart(timeStr) {
+  let t = String(timeStr || '')
+    .toLowerCase()
+    .replace(/\s+/g, '');
+  if (!t) return null;
+  const isPM = t.includes('pm') || (t.endsWith('p') && !t.endsWith('am'));
+  const isAM = t.includes('am') || (t.endsWith('a') && !t.includes('pm'));
+  t = t.replace(/[a-z]/g, '');
+  const [hStr, mStr] = t.split(':');
   let h = parseInt(hStr, 10);
-  const m = parseInt(mStr || '0', 10);
+  let m = parseInt(mStr || '0', 10);
   if (isNaN(h)) return null;
-  if (isPM && h !== 12) h += 12;
-  if (isAM && h === 12) h = 0;
-  return { hour: h, minute: isNaN(m) ? 0 : m };
+  if (isNaN(m)) m = 0;
+  return { hour: h, minute: m, explicitAmPm: isAM || isPM, isAM, isPM };
 }
 
-export function parseShiftHours(shiftStr) {
-  if (!shiftStr || typeof shiftStr !== 'string') return 0;
-  const s = shiftStr.trim().toUpperCase();
-  if (s === '-' || s === 'OFF' || s === 'OC' || s === '') return 0;
-  const parts = s.split('-');
-  if (parts.length !== 2) return 0;
-
-  function toDecimal(timeStr) {
-    let t = timeStr.toLowerCase().replace(/\s+/g, '');
-    const isPM = t.includes('pm') || t.includes('p');
-    const isAM = t.includes('am') || t.includes('a');
-    t = t.replace(/[a-z]/g, '');
-    let [h, m] = t.split(':').map(Number);
-    if (isNaN(h)) h = 0;
-    if (isNaN(m)) m = 0;
-    if (isPM && h !== 12) h += 12;
-    if (isAM && h === 12) h = 0;
-    return { val: h + m / 60, explicitAmPm: isAM || isPM };
-  }
-
-  try {
-    const startObj = toDecimal(parts[0]);
-    const endObj = toDecimal(parts[1]);
-    let start = startObj.val;
-    let end = endObj.val;
-    if (!endObj.explicitAmPm) {
-      if (end <= start) end += 12;
-      else if (end - start <= 5 && end <= 11) end += 12;
-    }
-    return Math.max(0, end - start);
-  } catch (e) {
-    return 0;
-  }
+function applyExplicitAmPm(part) {
+  let h = part.hour;
+  if (part.isPM && h !== 12) h += 12;
+  if (part.isAM && h === 12) h = 0;
+  return h;
 }
 
-export function parseShiftEndTime(shiftStr) {
+function inferBareEndHour(startH, endH) {
+  if (endH <= startH) return endH + 12;
+  if (endH - startH <= 5 && endH <= 11) return endH + 12;
+  return endH;
+}
+
+/**
+ * Resolve a shift string into 24h start/end.
+ * Bare afternoon forms like "1-8" / "2-8" mean 1pm–8pm (not 1am–8am).
+ */
+export function parseShiftTimes(shiftStr) {
   if (!shiftStr || typeof shiftStr !== 'string') return null;
   const s = shiftStr.trim();
   if (!s || s === '-' || s.toUpperCase() === 'OFF' || s.toUpperCase() === 'OC') return null;
   const parts = s.split(/\s*[-–]\s*/);
   if (parts.length < 2) return null;
-  const endPart = parts[parts.length - 1].trim().toLowerCase();
-  const isPM = endPart.includes('pm') || (endPart.endsWith('p') && !endPart.endsWith('am'));
-  const isAM = endPart.includes('am') || endPart.endsWith('a');
-  const clean = endPart.replace(/[a-z]/g, '');
-  const [hStr, mStr] = clean.split(':');
-  let h = parseInt(hStr, 10);
-  const m = parseInt(mStr || '0', 10);
-  if (isNaN(h)) return null;
 
-  if (!isAM && !isPM) {
-    const startObj = parseShiftStartTime(shiftStr);
-    const startH = startObj ? startObj.hour : 9;
-    if (h <= startH) h += 12;
-    else if (h - startH <= 5 && h <= 11) h += 12;
+  const startPart = parseShiftTimePart(parts[0]);
+  const endPart = parseShiftTimePart(parts[parts.length - 1]);
+  if (!startPart || !endPart) return null;
+
+  let startH;
+  let endH;
+  const startMin = startPart.minute;
+  const endMin = endPart.minute;
+
+  if (startPart.explicitAmPm && endPart.explicitAmPm) {
+    startH = applyExplicitAmPm(startPart);
+    endH = applyExplicitAmPm(endPart);
+  } else if (!startPart.explicitAmPm && !endPart.explicitAmPm) {
+    // "1-8", "2-8", "6-8" → afternoon/evening (both PM). Car wash does not
+    // run 1am–8am shifts; opening is 7am.
+    if (
+      startPart.hour >= 1 &&
+      startPart.hour <= 6 &&
+      endPart.hour >= 7 &&
+      endPart.hour <= 11 &&
+      endPart.hour > startPart.hour
+    ) {
+      startH = startPart.hour + 12;
+      endH = endPart.hour + 12;
+    } else {
+      startH = startPart.hour === 12 ? 12 : startPart.hour;
+      endH = inferBareEndHour(startH, endPart.hour);
+    }
+  } else if (!endPart.explicitAmPm) {
+    // "1pm-8", "7am-8", "10am-6"
+    startH = applyExplicitAmPm(startPart);
+    endH = inferBareEndHour(startH, endPart.hour);
   } else {
-    if (isPM && h !== 12) h += 12;
-    if (isAM && h === 12) h = 0;
+    // "1-8pm", "7-8pm"
+    endH = applyExplicitAmPm(endPart);
+    startH = startPart.hour === 12 ? 12 : startPart.hour;
+    // Prefer PM start when a bare morning hour would make an absurdly long shift.
+    if (startH >= 1 && startH <= 6 && endH >= 12 && endH - startH > 12) {
+      startH += 12;
+    }
   }
-  return { hour: h, minute: isNaN(m) ? 0 : m };
+
+  // One more overnight bump for explicit ends that cross midnight (7pm-1am).
+  if (endH < startH || (endH === startH && endMin < startMin)) {
+    // leave as overnight; consumer uses isOvernight
+  }
+
+  const start = { hour: startH, minute: startMin };
+  const end = { hour: endH, minute: endMin };
+  const isOvernight = end.hour < start.hour || (end.hour === start.hour && end.minute < start.minute);
+  return { start, end, isOvernight };
+}
+
+export function parseShiftStartTime(shiftStr) {
+  const times = parseShiftTimes(shiftStr);
+  return times ? times.start : null;
+}
+
+export function parseShiftEndTime(shiftStr) {
+  const times = parseShiftTimes(shiftStr);
+  return times ? times.end : null;
+}
+
+export function parseShiftHours(shiftStr) {
+  const times = parseShiftTimes(shiftStr);
+  if (!times) return 0;
+  let start = times.start.hour + times.start.minute / 60;
+  let end = times.end.hour + times.end.minute / 60;
+  if (times.isOvernight) end += 24;
+  return Math.max(0, end - start);
 }
 
 export function getChicagoIsoString(dateStr, hour, minute = 0, second = 0, millisecond = 0) {
@@ -418,12 +455,13 @@ export function getChicagoIsoString(dateStr, hour, minute = 0, second = 0, milli
   return candidate.toISOString();
 }
 
-export function parseShiftTimes(shiftStr) {
-  const start = parseShiftStartTime(shiftStr);
-  const end = parseShiftEndTime(shiftStr);
-  if (!start || !end) return null;
-  const isOvernight = end.hour < start.hour || (end.hour === start.hour && end.minute < start.minute);
-  return { start, end, isOvernight };
+/** Closing hour in America/Chicago for the given YYYY-MM-DD calendar day. */
+export function getStoreCloseHour(dateStr) {
+  const dow = new Date(`${dateStr}T12:00:00Z`).toLocaleDateString('en-US', {
+    weekday: 'short',
+    timeZone: 'America/Chicago',
+  });
+  return dow === 'Sun' ? STORE_CLOSE_HOUR_SUNDAY : STORE_CLOSE_HOUR_WEEKDAY;
 }
 
 export function getAutoOutIso(logDate, shiftStr) {
@@ -452,14 +490,24 @@ export function getAutoOutIso(logDate, shiftStr) {
     10,
   );
 
+  const closeHour = getStoreCloseHour(logDay);
   let targetDay = logDay;
   let outHour;
-  const outMin = inMin;
+  let outMin;
 
-  if (inHour < 19) {
-    outHour = Math.min(inHour + 8, 19);
+  if (inHour < closeHour) {
+    const plus8 = inHour + 8;
+    if (plus8 < closeHour) {
+      outHour = plus8;
+      outMin = inMin;
+    } else {
+      // Cap at store close (8pm Mon–Sat / 6pm Sun), not an arbitrary 7pm.
+      outHour = closeHour;
+      outMin = 0;
+    }
   } else {
     outHour = (inHour + 8) % 24;
+    outMin = inMin;
     if (inHour + 8 >= 24) {
       const d = new Date(`${logDay}T12:00:00Z`);
       d.setUTCDate(d.getUTCDate() + 1);

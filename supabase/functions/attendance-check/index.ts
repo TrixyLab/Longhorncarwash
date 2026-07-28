@@ -18,29 +18,77 @@ function nowCT() {
   return { date: `${yr}-${mo}-${dy}`, mins: h * 60 + m, mo: +mo, dy: +dy, yr: +yr };
 }
 
-function parseT(s: string): number | null {
-  s = s.trim();
-  const a = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
-  if (a) {
-    let h = +a[1]; const m = a[2] ? +a[2] : 0; const p = a[3].toLowerCase();
-    if (p === 'pm' && h !== 12) h += 12;
-    if (p === 'am' && h === 12) h = 0;
-    return h * 60 + m;
-  }
-  const b = s.match(/^(\d{1,2}):(\d{2})$/); if (b) return +b[1] * 60 + +b[2];
-  const c = s.match(/^(\d{1,2})$/); if (c) return +c[1] * 60;
-  return null;
+// Keep in sync with modules/utils.js parseShiftTimes.
+// Bare forms like "7-8" / "1-8" / "10am-6" must resolve to PM ends (8pm / 6pm),
+// not 8am / 6am — otherwise forgot-clock-out alerts fire mid-morning.
+function parseTimePart(timeStr: string): {
+  hour: number; minute: number; explicitAmPm: boolean; isAM: boolean; isPM: boolean;
+} | null {
+  let t = timeStr.toLowerCase().replace(/\s+/g, '');
+  if (!t) return null;
+  const isPM = t.includes('pm') || (t.endsWith('p') && !t.endsWith('am'));
+  const isAM = t.includes('am') || (t.endsWith('a') && !t.includes('pm'));
+  t = t.replace(/[a-z]/g, '');
+  const [hStr, mStr] = t.split(':');
+  let h = parseInt(hStr, 10);
+  let m = parseInt(mStr || '0', 10);
+  if (isNaN(h)) return null;
+  if (isNaN(m)) m = 0;
+  return { hour: h, minute: m, explicitAmPm: isAM || isPM, isAM, isPM };
+}
+
+function applyExplicitAmPm(part: { hour: number; isAM: boolean; isPM: boolean }): number {
+  let h = part.hour;
+  if (part.isPM && h !== 12) h += 12;
+  if (part.isAM && h === 12) h = 0;
+  return h;
+}
+
+function inferBareEndHour(startH: number, endH: number): number {
+  if (endH <= startH) return endH + 12;
+  if (endH - startH <= 5 && endH <= 11) return endH + 12;
+  return endH;
 }
 
 function parseShift(raw: string): { s: number; e: number } | null {
-  if (!raw || /^(off|-)$/i.test(raw.trim()) || !raw.trim()) return null;
+  if (!raw || /^(off|-|oc)$/i.test(raw.trim()) || !raw.trim()) return null;
   const pts = raw.split(/\s*[-–]\s*/);
   if (pts.length < 2) return null;
-  const s = parseT(pts[0]);
-  let e = parseT(pts[pts.length - 1]);
-  if (s === null || e === null) return null;
-  if (e <= s && !/am|pm/i.test(raw)) e += 720;
-  return { s, e };
+  const startPart = parseTimePart(pts[0]);
+  const endPart = parseTimePart(pts[pts.length - 1]);
+  if (!startPart || !endPart) return null;
+
+  let startH: number;
+  let endH: number;
+
+  if (startPart.explicitAmPm && endPart.explicitAmPm) {
+    startH = applyExplicitAmPm(startPart);
+    endH = applyExplicitAmPm(endPart);
+  } else if (!startPart.explicitAmPm && !endPart.explicitAmPm) {
+    // "1-8" / "2-8" → 1pm–8pm (not 1am–8am)
+    if (
+      startPart.hour >= 1 && startPart.hour <= 6 &&
+      endPart.hour >= 7 && endPart.hour <= 11 &&
+      endPart.hour > startPart.hour
+    ) {
+      startH = startPart.hour + 12;
+      endH = endPart.hour + 12;
+    } else {
+      startH = startPart.hour === 12 ? 12 : startPart.hour;
+      endH = inferBareEndHour(startH, endPart.hour);
+    }
+  } else if (!endPart.explicitAmPm) {
+    startH = applyExplicitAmPm(startPart);
+    endH = inferBareEndHour(startH, endPart.hour);
+  } else {
+    endH = applyExplicitAmPm(endPart);
+    startH = startPart.hour === 12 ? 12 : startPart.hour;
+    if (startH >= 1 && startH <= 6 && endH >= 12 && endH - startH > 12) {
+      startH += 12;
+    }
+  }
+
+  return { s: startH * 60 + startPart.minute, e: endH * 60 + endPart.minute };
 }
 
 function hdrMatch(h: string, mo: number, dy: number, yr: number): boolean {
