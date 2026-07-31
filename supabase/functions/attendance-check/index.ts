@@ -71,9 +71,15 @@ Deno.serve(async (req: Request) => {
 
     const status: Record<string, string> = {};
     for (const l of logs ?? []) {
-      if (new Date(l.created_at).toLocaleDateString('en-CA', { timeZone: TZ }) === date) {
-        status[l.user_id] = l.action;
-      }
+      // Last punch in the lookback window (not only same calendar day) so an
+      // overnight open IN still counts as stillIn for forgot-clock-out alerts.
+      status[l.user_id] = l.action;
+    }
+
+    const punchedInToday: Record<string, boolean> = {};
+    for (const l of logs ?? []) {
+      if (new Date(l.created_at).toLocaleDateString('en-CA', { timeZone: TZ }) !== date) continue;
+      if (l.action === 'IN' || l.action === 'CLOCK_IN') punchedInToday[l.user_id] = true;
     }
 
     const { data: sent } = await sb
@@ -96,15 +102,18 @@ Deno.serve(async (req: Request) => {
       const shift = parseShift(shiftStr);
       if (!shift) continue;
 
+      // For overnight ends (e + 24h), compare against mins and mins+24h.
+      const endCheck = shift.e > 24 * 60 ? mins + 24 * 60 : mins;
+
       const last = status[user.id] ?? null;
-      const inToday = last !== null;
       const stillIn =
         last === 'IN' ||
         last === 'END_LUNCH' ||
         last === 'START_LUNCH' ||
         last === 'CLOCK_IN';
+      const clockedInForShift = !!punchedInToday[user.id];
 
-      if (mins >= shift.s + 3 && mins < shift.e && !inToday) {
+      if (mins >= shift.s + 3 && mins < Math.min(shift.e, 24 * 60) && !clockedInForShift) {
         const k = `${user.id}:late_clock_in`;
         if (!sentSet.has(k)) {
           await tg(
@@ -119,11 +128,12 @@ Deno.serve(async (req: Request) => {
         }
       }
 
-      if (mins >= shift.e + 5 && stillIn) {
+      if (endCheck >= shift.e + 5 && stillIn) {
         const k = `${user.id}:forgot_clock_out`;
         if (!sentSet.has(k)) {
+          const endDisplay = formatShiftMins(shift.e % (24 * 60));
           await tg(
-            `${user.name} forgot to clock out - shift ended at ${formatShiftMins(shift.e)} on ${dateLabel}`,
+            `${user.name} forgot to clock out - shift ended at ${endDisplay} on ${dateLabel}`,
           );
           await sb.from('notifications_sent').insert({
             user_id: user.id,

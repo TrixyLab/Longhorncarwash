@@ -15,6 +15,13 @@ test('shared parseShift: afternoon bare form ends at 8pm', () => {
   assert.equal(formatShiftMins(14 * 60), '2:00 PM');
 });
 
+test('shared parseShift: overnight end is after start for attendance compares', () => {
+  const shift = parseShift('7pm-1am');
+  assert.ok(shift);
+  assert.equal(shift.s, 19 * 60);
+  assert.equal(shift.e, 25 * 60); // 1am next day
+});
+
 test('shared findShiftForUser: Telegram path must not steal next-week Friday', () => {
   const friJul31 = new Date('2026-07-31T18:00:00Z');
   const schedules = [

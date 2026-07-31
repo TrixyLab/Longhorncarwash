@@ -14,6 +14,7 @@ import {
   hasForgottenClockOut,
   findScheduleDayIndex,
   findShiftForUser,
+  pickOpenInCreatedAtForSweepOut,
   getStartOfWeek,
   getBiweeklyWeeks,
   getDistanceInMeters,
@@ -197,6 +198,32 @@ test('getAutoOutIso: unscheduled early morning does NOT use clock-in+8 (2pm)', (
   const clockIn = new Date('2026-07-31T11:00:00Z'); // Fri 6:00 AM CDT
   const iso = getAutoOutIso(clockIn, null);
   assert.equal(iso, '2026-08-01T01:00:00.000Z'); // 8:00 PM CDT Jul 31
+});
+
+test('getAutoOutIso: never stamps OUT before the open IN', () => {
+  // Afternoon cover while the cell still says morning 7-2.
+  const clockIn = new Date('2026-07-31T20:00:00Z'); // Fri 3:00 PM CDT
+  const iso = getAutoOutIso(clockIn, '7-2');
+  assert.equal(iso, '2026-08-01T01:00:00.000Z'); // store close 8pm, not 2pm before IN
+});
+
+test('hasForgottenClockOut: scheduled shift keeps 2h grace (no 14h bypass)', () => {
+  const clockIn = new Date('2026-07-31T11:00:00Z'); // Fri 6:00 AM CDT
+  const shiftStr = '7-8'; // end 8pm CDT = 2026-08-01T01:00:00Z
+  // Exactly at scheduled end — still inside grace
+  assert.equal(hasForgottenClockOut(clockIn, shiftStr, new Date('2026-08-01T01:00:00Z')), false);
+  // 2h past end — forgotten
+  assert.equal(hasForgottenClockOut(clockIn, shiftStr, new Date('2026-08-01T03:05:00Z')), true);
+});
+
+test('pickOpenInCreatedAtForSweepOut: ignores IN after the deleted OUT', () => {
+  const outAt = '2026-07-30T01:00:00.000Z'; // Wed 8pm CDT
+  const ins = [
+    { created_at: '2026-07-30T12:00:00.000Z' }, // next morning — must not win
+    { created_at: '2026-07-29T18:00:00.000Z' }, // real open IN
+    { created_at: '2026-07-29T14:00:00.000Z' },
+  ];
+  assert.equal(pickOpenInCreatedAtForSweepOut(ins, outAt), '2026-07-29T18:00:00.000Z');
 });
 
 test('getAutoOutIso: unscheduled Sunday fallback caps at 6pm store close', () => {

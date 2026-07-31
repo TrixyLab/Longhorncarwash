@@ -130,7 +130,14 @@ export function parseShift(raw) {
     }
   }
 
-  return { s: startH * 60 + startPart.minute, e: endH * 60 + endPart.minute };
+  const endMinOfDay = endH * 60 + endPart.minute;
+  let endMins = endMinOfDay;
+  const startMins = startH * 60 + startPart.minute;
+  // Overnight shifts (7pm-1am): attendance compares wall-clock mins and needs
+  // end after start, otherwise "forgot" fires all evening.
+  if (endMins <= startMins) endMins += 24 * 60;
+
+  return { s: startMins, e: endMins };
 }
 
 export function formatShiftMins(mins) {

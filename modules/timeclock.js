@@ -4,6 +4,7 @@ import {
   checkLocation,
   calculateTotalHoursForLogs,
   parseShiftStartTime,
+  parseShiftTimes,
   getAutoOutIso,
   hasForgottenClockOut,
   findShiftForUser,
@@ -1219,29 +1220,33 @@ export function init() {
 
         if (!nearbyLogs?.length) continue;
 
-        const candidateIns = nearbyLogs.filter((l) => IN_LIKE.includes(l.action));
+        const candidateIns = nearbyLogs.filter(
+          (l) => IN_LIKE.includes(l.action) && new Date(l.created_at).getTime() <= sweepDate.getTime(),
+        );
         if (!candidateIns.length) continue;
 
         let best = null;
         for (const inLog of candidateIns) {
           const inDate = new Date(inLog.created_at);
           const userShiftStr = findShiftForUser(schedules, user?.name, inDate, TZ);
+          // Only rewrite when we have a parseable scheduled end — never treat
+          // the store-close fallback as authority over an existing labeled sweep
+          // (that rewrote legitimate morning 7-2 outs to 8pm on schedule miss).
+          if (!userShiftStr || !parseShiftTimes(userShiftStr)) continue;
 
           const correctAutoOutIso = getAutoOutIso(inDate, userShiftStr);
           const correctMs = new Date(correctAutoOutIso).getTime();
           const sweepMs = sweepDate.getTime();
           const delta = Math.abs(correctMs - sweepMs);
-          const correctDay = new Date(correctAutoOutIso).toLocaleDateString('en-CA', { timeZone: TZ });
-          const sweepDay = sweepDate.toLocaleDateString('en-CA', { timeZone: TZ });
-          const inDay = inDate.toLocaleDateString('en-CA', { timeZone: TZ });
-          if (delta <= 16 * 3600000 || correctDay === sweepDay || inDay === sweepDay) {
-            if (!best || delta < best.delta) {
-              best = { correctAutoOutIso, delta };
-            }
+          // Ignore tiny skew; only heal clearly wrong stamps (e.g. 8am vs 8pm).
+          if (delta < 30 * 60 * 1000) continue;
+          if (delta > 16 * 3600000) continue;
+          if (!best || delta < best.delta) {
+            best = { correctAutoOutIso, correctMs, delta };
           }
         }
 
-        if (best && best.correctAutoOutIso !== sweepLog.created_at) {
+        if (best && best.correctMs !== sweepDate.getTime()) {
           await window.supabaseClient
             .from('time_logs')
             .update({ created_at: best.correctAutoOutIso })

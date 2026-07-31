@@ -544,23 +544,9 @@ export function findShiftForUser(schedules, employeeName, logDate, timeZone = 'A
   return null;
 }
 
-export function getAutoOutIso(logDate, shiftStr) {
+function storeCloseAutoOutIso(logDate) {
   const TZ = 'America/Chicago';
   const logDay = logDate.toLocaleDateString('en-CA', { timeZone: TZ });
-
-  if (shiftStr) {
-    const shiftTimes = parseShiftTimes(shiftStr);
-    if (shiftTimes) {
-      let targetDay = logDay;
-      if (shiftTimes.isOvernight) {
-        const d = new Date(`${logDay}T12:00:00Z`);
-        d.setUTCDate(d.getUTCDate() + 1);
-        targetDay = d.toISOString().split('T')[0];
-      }
-      return getChicagoIsoString(targetDay, shiftTimes.end.hour, shiftTimes.end.minute, 0, 0);
-    }
-  }
-
   const inHour = parseInt(
     logDate.toLocaleTimeString('en-US', { timeZone: TZ, hour: 'numeric', hour12: false }),
     10,
@@ -569,16 +555,14 @@ export function getAutoOutIso(logDate, shiftStr) {
     logDate.toLocaleTimeString('en-US', { timeZone: TZ, minute: 'numeric' }),
     10,
   );
-
   const closeHour = getStoreCloseHour(logDay);
   let targetDay = logDay;
   let outHour;
   let outMin;
 
   if (inHour < closeHour) {
-    // No schedule (or unparseable): close at store hours. Do NOT use clock-in+8
-    // — a 6am open punch would land at 2pm and cut a till-8pm worker short when
-    // schedule lookup misses.
+    // No schedule (or unparseable / already-ended cell): close at store hours.
+    // Do NOT use clock-in+8 — a 6am open punch would land at 2pm.
     outHour = closeHour;
     outMin = 0;
   } else {
@@ -594,6 +578,39 @@ export function getAutoOutIso(logDate, shiftStr) {
   return getChicagoIsoString(targetDay, outHour, outMin, 0, 0);
 }
 
+export function getAutoOutIso(logDate, shiftStr) {
+  const TZ = 'America/Chicago';
+  const logDay = logDate.toLocaleDateString('en-CA', { timeZone: TZ });
+  const inMs = logDate.getTime();
+
+  if (shiftStr) {
+    const shiftTimes = parseShiftTimes(shiftStr);
+    if (shiftTimes) {
+      let targetDay = logDay;
+      if (shiftTimes.isOvernight) {
+        const d = new Date(`${logDay}T12:00:00Z`);
+        d.setUTCDate(d.getUTCDate() + 1);
+        targetDay = d.toISOString().split('T')[0];
+      }
+      const scheduledIso = getChicagoIsoString(
+        targetDay,
+        shiftTimes.end.hour,
+        shiftTimes.end.minute,
+        0,
+        0,
+      );
+      // Never stamp an OUT before the open IN (e.g. afternoon cover on a
+      // morning-only cell like 7-2, or a late re-clock after scheduled end).
+      if (new Date(scheduledIso).getTime() > inMs) {
+        return scheduledIso;
+      }
+      return storeCloseAutoOutIso(logDate);
+    }
+  }
+
+  return storeCloseAutoOutIso(logDate);
+}
+
 export function hasForgottenClockOut(logDate, shiftStr, now = new Date()) {
   const elapsedMs = now.getTime() - logDate.getTime();
   const elapsedHours = elapsedMs / (1000 * 60 * 60);
@@ -603,14 +620,38 @@ export function hasForgottenClockOut(logDate, shiftStr, now = new Date()) {
   const autoOutIso = getAutoOutIso(logDate, shiftStr);
   const autoOutTime = new Date(autoOutIso).getTime();
   const GRACE_MS = 2 * 60 * 60 * 1000;
+  const scheduled = shiftStr ? parseShiftTimes(shiftStr) : null;
 
   if (now.getTime() >= autoOutTime + GRACE_MS) {
     return true;
   }
 
-  if (elapsedHours >= 14) return true;
+  // 14h hard cap only when there is no parseable scheduled end — otherwise a
+  // 6am IN on a 7-8 shift would sweep at exactly 8pm and skip the 2h grace.
+  if (!scheduled && elapsedHours >= 14) return true;
 
   return false;
+}
+
+/**
+ * Pick the open IN that a deleted System Auto-Sweep OUT closed: latest IN-like
+ * punch at or before the OUT. Avoids attaching AUTO_SWEEP_CLEARED to a newer
+ * next-day IN inside a ±20h window.
+ */
+export function pickOpenInCreatedAtForSweepOut(inLogs, deletedOutCreatedAt) {
+  const outMs = new Date(deletedOutCreatedAt).getTime();
+  if (!Number.isFinite(outMs)) return null;
+  let best = null;
+  let bestMs = -Infinity;
+  for (const log of inLogs || []) {
+    const t = new Date(log.created_at).getTime();
+    if (!Number.isFinite(t) || t > outMs) continue;
+    if (t >= bestMs) {
+      bestMs = t;
+      best = log.created_at;
+    }
+  }
+  return best;
 }
 
 // --- CSV Download Helper ---

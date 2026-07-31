@@ -8,7 +8,9 @@ const WEBHOOK_SECRET = 'lcw-punch-notify-2026';
 
 const ACTION_LABELS: Record<string, string> = {
   IN: 'clocked IN',
+  CLOCK_IN: 'clocked IN',
   OUT: 'clocked OUT',
+  CLOCK_OUT: 'clocked OUT',
   START_LUNCH: 'started LUNCH',
   END_LUNCH: 'returned from LUNCH',
 };
@@ -75,7 +77,7 @@ Deno.serve(async (req: Request) => {
     });
 
     const message =
-      action === 'OUT' && editedBy === SYSTEM_AUTO_SWEEP_LABEL
+      (action === 'OUT' || action === 'CLOCK_OUT') && editedBy === SYSTEM_AUTO_SWEEP_LABEL
         ? `${name} was auto clocked OUT at ${time} on ${dateLabel} (${SYSTEM_AUTO_SWEEP_LABEL})`
         : `${name} ${ACTION_LABELS[action]} at ${time} on ${dateLabel}`;
 

@@ -106,26 +106,33 @@ export function TimesheetScreen() {
           if (isAutoSweepOut) {
             const sweepDate = new Date(log.created_at);
             const windowStart = new Date(sweepDate.getTime() - 20 * 3600000).toISOString();
-            const windowEnd = new Date(sweepDate.getTime() + 20 * 3600000).toISOString();
             const { data: ins } = await supabase
               .from('time_logs')
               .select('created_at')
               .eq('user_id', log.user_id)
               .in('action', ['IN', 'CLOCK_IN', 'END_LUNCH', 'START_LUNCH'])
               .gte('created_at', windowStart)
-              .lte('created_at', windowEnd)
+              .lte('created_at', log.created_at)
               .order('created_at', { ascending: false })
               .limit(1);
             const inAt = ins?.[0]?.created_at || log.created_at;
-            await supabase.from('time_logs').insert({
+            const { error: markerErr } = await supabase.from('time_logs').insert({
               user_id: log.user_id,
               action: 'AUTO_SWEEP_CLEARED',
               created_at: new Date(new Date(inAt).getTime() + 1000).toISOString(),
               edited_by_manager: 'Manager cleared auto-sweep',
             });
+            if (markerErr) {
+              Alert.alert('Error', 'Could not clear auto-sweep marker.');
+              return;
+            }
           }
 
-          await supabase.from('time_logs').delete().eq('id', log.id);
+          const { error: delErr } = await supabase.from('time_logs').delete().eq('id', log.id);
+          if (delErr) {
+            Alert.alert('Error', 'Could not delete punch.');
+            return;
+          }
 
           if (selectedEmployee) {
             const updated = {
