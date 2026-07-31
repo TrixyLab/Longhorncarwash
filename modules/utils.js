@@ -486,6 +486,64 @@ export function getStoreCloseHour(dateStr) {
   return dow === 'Sun' ? STORE_CLOSE_HOUR_SUNDAY : STORE_CLOSE_HOUR_WEEKDAY;
 }
 
+/**
+ * Match a schedule header to a calendar day in America/Chicago.
+ * Prefer M/D date match (safe across weeks). Weekday-only matching is only
+ * allowed when the schedule has no dated headers — otherwise "Fri" on next
+ * week's grid would steal this Friday's shift and auto-sweep at the wrong time.
+ */
+export function findScheduleDayIndex(headers, logDate, timeZone = 'America/Chicago') {
+  if (!headers?.length || !logDate) return -1;
+  const mo = parseInt(logDate.toLocaleDateString('en-US', { timeZone, month: 'numeric' }), 10);
+  const dy = parseInt(logDate.toLocaleDateString('en-US', { timeZone, day: 'numeric' }), 10);
+  const dayAbbr = logDate
+    .toLocaleDateString('en-US', { timeZone, weekday: 'short' })
+    .toUpperCase();
+
+  const list = headers.map((h) => (h == null ? '' : h.toString()));
+  const datedIdx = list.findIndex((hStr) => {
+    const m = hStr.match(/(\d{1,2})\/(\d{1,2})/);
+    return !!(m && parseInt(m[1], 10) === mo && parseInt(m[2], 10) === dy);
+  });
+  if (datedIdx >= 0) return datedIdx;
+
+  const anyDated = list.some((hStr) => /\d{1,2}\/\d{1,2}/.test(hStr));
+  if (anyDated) return -1;
+
+  return list.findIndex((hStr) => hStr.toUpperCase().startsWith(dayAbbr));
+}
+
+/**
+ * Resolve an employee's shift string for the day of `logDate` from recent
+ * schedule rows. Schedules are expected newest-first. Once a schedule whose
+ * headers cover that calendar day is found and lists the employee, that cell
+ * wins — even when OFF/blank — so we never fall through to another week's Fri.
+ */
+export function findShiftForUser(schedules, employeeName, logDate, timeZone = 'America/Chicago') {
+  if (!schedules?.length || !employeeName || !logDate) return null;
+  const targetName = employeeName.trim().toLowerCase();
+  if (!targetName) return null;
+
+  for (const sched of schedules) {
+    try {
+      const parsed = typeof sched.content === 'string' ? JSON.parse(sched.content) : sched.content;
+      if (!parsed) continue;
+      const dayIdx = findScheduleDayIndex(parsed.headers || [], logDate, timeZone);
+      if (dayIdx < 0) continue;
+
+      const myRow = (parsed.rows || []).find(
+        (r) => r.employee?.trim().toLowerCase() === targetName,
+      );
+      if (!myRow) continue;
+
+      return myRow.shifts?.[dayIdx] || null;
+    } catch {
+      // ignore bad schedule JSON
+    }
+  }
+  return null;
+}
+
 export function getAutoOutIso(logDate, shiftStr) {
   const TZ = 'America/Chicago';
   const logDay = logDate.toLocaleDateString('en-CA', { timeZone: TZ });
@@ -518,15 +576,11 @@ export function getAutoOutIso(logDate, shiftStr) {
   let outMin;
 
   if (inHour < closeHour) {
-    const plus8 = inHour + 8;
-    if (plus8 < closeHour) {
-      outHour = plus8;
-      outMin = inMin;
-    } else {
-      // Cap at store close (8pm Mon–Sat / 6pm Sun), not an arbitrary 7pm.
-      outHour = closeHour;
-      outMin = 0;
-    }
+    // No schedule (or unparseable): close at store hours. Do NOT use clock-in+8
+    // — a 6am open punch would land at 2pm and cut a till-8pm worker short when
+    // schedule lookup misses.
+    outHour = closeHour;
+    outMin = 0;
   } else {
     outHour = (inHour + 8) % 24;
     outMin = inMin;

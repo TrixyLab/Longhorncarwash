@@ -6,6 +6,7 @@ import {
   parseShiftStartTime,
   getAutoOutIso,
   hasForgottenClockOut,
+  findShiftForUser,
   getPunchTransitionError,
   getMissedPunchRequestError,
   SYSTEM_AUTO_SWEEP_LABEL,
@@ -819,8 +820,6 @@ export function init() {
       const chicagoNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
       const currentTotalMin = chicagoNow.getHours() * 60 + chicagoNow.getMinutes();
       const todayStr = `${chicagoNow.getFullYear()}-${String(chicagoNow.getMonth() + 1).padStart(2, '0')}-${String(chicagoNow.getDate()).padStart(2, '0')}`;
-      const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-      const todayAbbr = dayNames[chicagoNow.getDay()];
 
       const { data: schedules } = await window.supabaseClient
         .from('schedules')
@@ -829,29 +828,14 @@ export function init() {
         .order('created_at', { ascending: false })
         .limit(5);
 
-      if (schedules && schedules.length > 0) {
-        for (const sched of schedules) {
-          try {
-            const parsed = JSON.parse(sched.content);
-            const myRow = parsed.rows?.find((r) => r.employee === state.currentUser.name);
-            if (!myRow) continue;
+      const shiftStr = findShiftForUser(schedules, state.currentUser.name, now, 'America/Chicago');
+      if (shiftStr) {
+        const startTime = parseShiftStartTime(shiftStr);
+        if (startTime) {
+          const shiftTotalMin = startTime.hour * 60 + startTime.minute;
+          const GRACE_MIN = 5;
 
-            const todayIdx = (parsed.headers || []).findIndex(
-              (h) => h && h.toString().toUpperCase().startsWith(todayAbbr.toUpperCase()),
-            );
-            if (todayIdx < 0) continue;
-
-            const shiftStr = myRow.shifts?.[todayIdx];
-            if (!shiftStr) continue;
-
-            const startTime = parseShiftStartTime(shiftStr);
-            if (!startTime) break; // OFF — no restriction
-
-            const shiftTotalMin = startTime.hour * 60 + startTime.minute;
-            const GRACE_MIN = 5;
-
-            if (currentTotalMin >= shiftTotalMin - GRACE_MIN) break; // On time
-
+          if (currentTotalMin < shiftTotalMin - GRACE_MIN) {
             // Early — check for existing approval
             const { data: approval } = await window.supabaseClient
               .from('early_clockin_approvals')
@@ -862,43 +846,41 @@ export function init() {
               .limit(1);
 
             const approvalStatus = approval?.[0]?.status;
-            if (approvalStatus === 'approved') break; // Approved — allow
+            if (approvalStatus !== 'approved') {
+              const ampm = startTime.hour >= 12 ? 'PM' : 'AM';
+              const h12 = startTime.hour % 12 || 12;
+              const shiftDisplay = `${h12}:${String(startTime.minute).padStart(2, '0')} ${ampm}`;
 
-            const ampm = startTime.hour >= 12 ? 'PM' : 'AM';
-            const h12 = startTime.hour % 12 || 12;
-            const shiftDisplay = `${h12}:${String(startTime.minute).padStart(2, '0')} ${ampm}`;
+              if (approvalStatus === 'pending') {
+                showToast(
+                  `Shift starts at ${shiftDisplay}. Approval pending — check with your manager.`,
+                  'warning',
+                );
+                return;
+              }
+              if (approvalStatus === 'denied') {
+                showToast(
+                  `Early clock-in was denied. Your shift starts at ${shiftDisplay}.`,
+                  'error',
+                );
+                return;
+              }
 
-            if (approvalStatus === 'pending') {
-              showToast(
-                `Shift starts at ${shiftDisplay}. Approval pending — check with your manager.`,
-                'warning',
-              );
+              // No request yet — prompt
+              if (modalEarlyClockin) {
+                const el = document.getElementById('early-clockin-shift-start');
+                if (el) el.textContent = shiftDisplay;
+                modalEarlyClockin.dataset.shiftDate = todayStr;
+                modalEarlyClockin.dataset.shiftStart = shiftDisplay;
+                modalEarlyClockin.classList.remove('hidden');
+              } else {
+                showToast(
+                  `Shift starts at ${shiftDisplay}. Request early clock-in from a manager.`,
+                  'error',
+                );
+              }
               return;
             }
-            if (approvalStatus === 'denied') {
-              showToast(
-                `Early clock-in was denied. Your shift starts at ${shiftDisplay}.`,
-                'error',
-              );
-              return;
-            }
-
-            // No request yet — prompt
-            if (modalEarlyClockin) {
-              const el = document.getElementById('early-clockin-shift-start');
-              if (el) el.textContent = shiftDisplay;
-              modalEarlyClockin.dataset.shiftDate = todayStr;
-              modalEarlyClockin.dataset.shiftStart = shiftDisplay;
-              modalEarlyClockin.classList.remove('hidden');
-            } else {
-              showToast(
-                `Shift starts at ${shiftDisplay}. Request early clock-in from a manager.`,
-                'error',
-              );
-            }
-            return;
-          } catch (e) {
-            continue;
           }
         }
       }
@@ -1067,39 +1049,9 @@ export function init() {
           ) {
             const logDate = new Date(log.created_at);
 
-            // Find user's scheduled shift for logDate
-            let userShiftStr = null;
-            if (schedules && schedules.length > 0 && u.name) {
-              const mo = parseInt(logDate.toLocaleDateString('en-US', { timeZone: TZ, month: 'numeric' }), 10);
-              const dy = parseInt(logDate.toLocaleDateString('en-US', { timeZone: TZ, day: 'numeric' }), 10);
-              const dayAbbr = logDate.toLocaleDateString('en-US', { timeZone: TZ, weekday: 'short' });
-
-              for (const sched of schedules) {
-                try {
-                  const parsed = JSON.parse(sched.content);
-                  const myRow = parsed.rows?.find(
-                    (r) => r.employee?.trim().toLowerCase() === u.name.trim().toLowerCase(),
-                  );
-                  if (!myRow) continue;
-
-                  const dayIdx = (parsed.headers || []).findIndex((h) => {
-                    if (!h) return false;
-                    const hStr = h.toString();
-                    if (hStr.toUpperCase().startsWith(dayAbbr.toUpperCase())) return true;
-                    const m = hStr.match(/(\d{1,2})\/(\d{1,2})/);
-                    if (m && parseInt(m[1], 10) === mo && parseInt(m[2], 10) === dy) return true;
-                    return false;
-                  });
-
-                  if (dayIdx >= 0) {
-                    userShiftStr = myRow.shifts?.[dayIdx] || null;
-                    if (userShiftStr) break;
-                  }
-                } catch (e) {
-                  // ignore
-                }
-              }
-            }
+            // Match by calendar date (not bare "Fri") so next/last week's grid
+            // cannot supply a morning end like 7-2 while today's cell is 1-8.
+            const userShiftStr = findShiftForUser(schedules, u.name, logDate, TZ);
 
             // Only sweep if the employee has actually FORGOTTEN to clock out
             if (hasForgottenClockOut(logDate, userShiftStr, now)) {
@@ -1273,39 +1225,7 @@ export function init() {
         let best = null;
         for (const inLog of candidateIns) {
           const inDate = new Date(inLog.created_at);
-          let userShiftStr = null;
-
-          if (schedules && schedules.length > 0 && user?.name) {
-            const mo = parseInt(inDate.toLocaleDateString('en-US', { timeZone: TZ, month: 'numeric' }), 10);
-            const dy = parseInt(inDate.toLocaleDateString('en-US', { timeZone: TZ, day: 'numeric' }), 10);
-            const dayAbbr = inDate.toLocaleDateString('en-US', { timeZone: TZ, weekday: 'short' });
-
-            for (const sched of schedules) {
-              try {
-                const parsed = JSON.parse(sched.content);
-                const myRow = parsed.rows?.find(
-                  (r) => r.employee?.trim().toLowerCase() === user.name.trim().toLowerCase(),
-                );
-                if (!myRow) continue;
-
-                const dayIdx = (parsed.headers || []).findIndex((h) => {
-                  if (!h) return false;
-                  const hStr = h.toString();
-                  if (hStr.toUpperCase().startsWith(dayAbbr.toUpperCase())) return true;
-                  const m = hStr.match(/(\d{1,2})\/(\d{1,2})/);
-                  if (m && parseInt(m[1], 10) === mo && parseInt(m[2], 10) === dy) return true;
-                  return false;
-                });
-
-                if (dayIdx >= 0) {
-                  userShiftStr = myRow.shifts?.[dayIdx] || null;
-                  if (userShiftStr) break;
-                }
-              } catch (e) {
-                // ignore
-              }
-            }
-          }
+          const userShiftStr = findShiftForUser(schedules, user?.name, inDate, TZ);
 
           const correctAutoOutIso = getAutoOutIso(inDate, userShiftStr);
           const correctMs = new Date(correctAutoOutIso).getTime();
