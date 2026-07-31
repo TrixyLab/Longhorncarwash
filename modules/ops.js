@@ -1,4 +1,4 @@
-import { state, showToast } from './utils.js';
+import { state, showToast, confirmAppDialog } from './utils.js';
 
 const checklistsContainer = document.getElementById('checklists-container');
 const siteLogsContainer = document.getElementById('site-logs-container');
@@ -166,7 +166,12 @@ export async function loadChecklists() {
 }
 
 async function deleteChecklist(id, title) {
-  if (!confirm(`Are you sure you want to delete the "${title}" checklist?`)) return;
+  const ok = await confirmAppDialog({
+    title: 'Delete Checklist',
+    message: `Are you sure you want to delete the "${title}" checklist?`,
+    confirmLabel: 'Delete Checklist',
+  });
+  if (!ok) return;
   try {
     const { error } = await window.supabaseClient.from('checklists').delete().eq('id', id);
     if (error) throw error;
@@ -541,7 +546,13 @@ export function init() {
         return;
       }
       if (!allChecked) {
-        if (!confirm('Not all tasks are checked. Complete anyway?')) return;
+        const ok = await confirmAppDialog({
+          title: 'Incomplete Checklist',
+          message: 'Not all tasks are checked. Complete anyway?',
+          confirmLabel: 'Complete Anyway',
+          tone: 'primary',
+        });
+        if (!ok) return;
       }
 
       try {

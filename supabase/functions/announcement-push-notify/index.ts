@@ -1,10 +1,9 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-
-const WEBHOOK_SECRET = 'lcw-punch-notify-2026';
+import { assertWebhookSecret } from '../_shared/secrets.mjs';
 
 Deno.serve(async (req: Request) => {
-  if (req.headers.get('x-webhook-secret') !== WEBHOOK_SECRET) {
+  if (!assertWebhookSecret(req)) {
     return new Response('Unauthorized', { status: 401 });
   }
 

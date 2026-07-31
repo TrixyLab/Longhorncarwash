@@ -1,9 +1,11 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import {
+  assertWebhookSecret,
+  getTelegramBotToken,
+  getTelegramChatId,
+} from '../_shared/secrets.mjs';
 
-const BOT = '8729010258:AAEh2We1rFbEiC1WoEbz0Gz5qOyDr5Kyo4c';
-const CHAT = '-5595038862';
-const SECRET = 'lcw-punch-notify-2026';
 const TZ = 'America/Chicago';
 
 function nowCT() {
@@ -108,15 +110,15 @@ function fmt(mins: number): string {
 }
 
 async function tg(msg: string) {
-  await fetch(`https://api.telegram.org/bot${BOT}/sendMessage`, {
+  await fetch(`https://api.telegram.org/bot${getTelegramBotToken()}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: CHAT, text: msg }),
+    body: JSON.stringify({ chat_id: getTelegramChatId(), text: msg }),
   });
 }
 
 Deno.serve(async (req: Request) => {
-  if (req.headers.get('x-webhook-secret') !== SECRET) {
+  if (!assertWebhookSecret(req)) {
     return new Response('Unauthorized', { status: 401 });
   }
   const sb = createClient(

@@ -10,6 +10,7 @@ import {
   SYSTEM_AUTO_SWEEP_LABEL,
   AUTO_SWEEP_CLEARED_ACTION,
   buildAutoSweepClearedRow,
+  confirmAppDialog,
 } from './utils.js';
 
 // Role hierarchy: what each role can access
@@ -89,54 +90,6 @@ const ROLE_ACCESS = {
 // Relocating them to <body> lets them render on top regardless of the active view.
 function ensureModalTopLevel(el) {
   if (el && el.parentElement !== document.body) document.body.appendChild(el);
-}
-
-/**
- * In-app confirm dialog. Do NOT use window.confirm() for punch deletes —
- * Chromium/Electron's "Prevent this page from creating additional dialogs"
- * checkbox makes later confirm() calls always return false, so Delete appears
- * broken with no toast or error.
- */
-function confirmAppDialog({
-  title = 'Confirm',
-  message = 'Are you sure?',
-  confirmLabel = 'Delete',
-} = {}) {
-  return new Promise((resolve) => {
-    const modal = document.getElementById('modal-confirm');
-    const titleEl = document.getElementById('confirm-title');
-    const msgEl = document.getElementById('confirm-message');
-    const btnOk = document.getElementById('btn-confirm-ok');
-    const btnCancel = document.getElementById('btn-confirm-cancel');
-    if (!modal || !btnOk || !btnCancel) {
-      resolve(window.confirm(message));
-      return;
-    }
-
-    if (titleEl) titleEl.textContent = title;
-    if (msgEl) msgEl.textContent = message;
-    btnOk.textContent = confirmLabel;
-
-    ensureModalTopLevel(modal);
-
-    const finish = (ok) => {
-      modal.classList.add('hidden');
-      btnOk.removeEventListener('click', onOk);
-      btnCancel.removeEventListener('click', onCancel);
-      modal.removeEventListener('click', onBackdrop);
-      resolve(ok);
-    };
-    const onOk = () => finish(true);
-    const onCancel = () => finish(false);
-    const onBackdrop = (e) => {
-      if (e.target === modal) finish(false);
-    };
-
-    btnOk.addEventListener('click', onOk);
-    btnCancel.addEventListener('click', onCancel);
-    modal.addEventListener('click', onBackdrop);
-    modal.classList.remove('hidden');
-  });
 }
 
 // Show the manager-password field only when a leadership (non-Employee) role is selected
@@ -378,7 +331,7 @@ export async function loadTimesheets() {
         .select('id, name, payroll_name, pay_rate, is_salary, tax_status, role, is_approved, avatar'),
       window.supabaseClient
         .from('time_logs')
-        .select('user_id, action, created_at')
+        .select('user_id, action, created_at, edited_by_manager')
         .order('created_at', { ascending: true }),
       window.supabaseClient
         .from('sales')
@@ -434,6 +387,9 @@ export async function loadTimesheets() {
         commWeek4: 0,
         commBiweeklyWeek1: 0,
         commBiweeklyWeek2: 0,
+        autoSweepWeek: 0,
+        autoSweepBiweekly: 0,
+        autoSweepMonth: 0,
         currentStatus: 'OUT',
         lastIn: null,
       };
@@ -505,6 +461,14 @@ export async function loadTimesheets() {
       const emp = state.employeeMap[log.user_id];
       if (!emp) return;
       const time = new Date(log.created_at).getTime();
+      const isAutoSweepOut =
+        (log.action === 'OUT' || log.action === 'CLOCK_OUT') &&
+        log.edited_by_manager === SYSTEM_AUTO_SWEEP_LABEL;
+      if (isAutoSweepOut) {
+        if (time >= startOfWeek) emp.autoSweepWeek += 1;
+        if (time >= biweeklyW1 && time < biweeklyNextW) emp.autoSweepBiweekly += 1;
+        if (time >= startOf4WeeksAgo) emp.autoSweepMonth += 1;
+      }
 
       if (log.action === 'IN' || log.action === 'END_LUNCH' || log.action === 'CLOCK_IN') {
         emp.currentStatus = 'IN';
@@ -645,6 +609,7 @@ export async function loadTimesheets() {
         taxStatus: emp.tax_status || 'Single',
         isSalary: !!emp.is_salary,
         lastWeek: parseFloat(totalLastWeekHrs) || 0,
+        autoSweepCount: emp.autoSweepWeek || 0,
       });
 
       if (biweeklyHistoryBody) {
@@ -659,6 +624,7 @@ export async function loadTimesheets() {
         trB.dataset.id = emp.id;
         trB.dataset.isSalary = emp.is_salary;
         trB.dataset.payRate = emp.pay_rate;
+        trB.dataset.autoSweepCount = String(emp.autoSweepBiweekly || 0);
         trB.innerHTML = `
           <td>${displayName}</td>
           <td>${w1Hrs}</td><td>${w2Hrs}</td>
@@ -698,6 +664,7 @@ export async function loadTimesheets() {
         trM.dataset.id = emp.id;
         trM.dataset.isSalary = emp.is_salary;
         trM.dataset.payRate = emp.pay_rate;
+        trM.dataset.autoSweepCount = String(emp.autoSweepMonth || 0);
         trM.innerHTML = `
           <td>${displayName}</td>
           <td>${w4h}</td><td>${w3h}</td><td>${w2h}</td><td>${totalLastWeekHrs}</td><td>${totalWeekHrs}</td>
@@ -1034,7 +1001,7 @@ function exportWeeklyCsv() {
     return;
   }
   let csv =
-    '#,Employee,Status,Wed,Thu,Fri,Sat,Sun,Mon,Tue,Total This Week,Rate,Commission ($),Est. Weekly Gross ($),Tax Status,Est. Taxes ($),Est. Net Pay ($),Last Week Total\n';
+    '#,Employee,Status,Wed,Thu,Fri,Sat,Sun,Mon,Tue,Total This Week,Rate,Commission ($),Est. Weekly Gross ($),Tax Status,Est. Taxes ($),Est. Net Pay ($),Last Week Total,System Auto-Sweep Flags (week)\n';
   let count = 1;
   rows.forEach((r) => {
     if (r.total === 0 && !r.isSalary) return;
@@ -1052,6 +1019,7 @@ function exportWeeklyCsv() {
       estTaxes.toFixed(2),
       estNet.toFixed(2),
       r.lastWeek.toFixed(2),
+      r.autoSweepCount > 0 ? `AUTO_SWEEP x${r.autoSweepCount}` : '',
     ].map((v) => `"${String(v).replace(/"/g, '""')}"`);
     csv += `"${count++}",${cells.join(',')}\n`;
   });
@@ -1065,7 +1033,7 @@ function exportBiweeklyCsv(w1Range, w2Range) {
     showToast('No data to export', 'warning');
     return;
   }
-  let csv = `#,Employee,Week 1 (${w1Range}) (Hrs),Week 2 (${w2Range}) (Hrs),Biweekly Total (Hrs),Commission ($),Type,Rate/Salary,Est. Gross Pay ($),Tax Status,Est. Taxes ($),Est. Net Pay ($)\n`;
+  let csv = `#,Employee,Week 1 (${w1Range}) (Hrs),Week 2 (${w2Range}) (Hrs),Biweekly Total (Hrs),Commission ($),Type,Rate/Salary,Est. Gross Pay ($),Tax Status,Est. Taxes ($),Est. Net Pay ($),System Auto-Sweep Flags (biweekly)\n`;
   let count = 1;
   rows.forEach((row) => {
     const cols = row.querySelectorAll('td');
@@ -1082,6 +1050,7 @@ function exportBiweeklyCsv(w1Range, w2Range) {
     const taxStatus = emp ? emp.tax_status || 'Single' : 'Single';
     const estTaxes = calculateEstimatedTaxes(estGross, taxStatus, isSalary, 26);
     const estNet = Math.max(0, estGross - estTaxes);
+    const autoSweepCount = parseInt(row.dataset.autoSweepCount || '0', 10) || 0;
 
     let rowData = [`"${count++}"`];
     for (let i = 0; i < 4; i++) {
@@ -1097,6 +1066,7 @@ function exportBiweeklyCsv(w1Range, w2Range) {
       `"${taxStatus}"`,
       `"${estTaxes.toFixed(2)}"`,
       `"${estNet.toFixed(2)}"`,
+      `"${autoSweepCount > 0 ? `AUTO_SWEEP x${autoSweepCount}` : ''}"`,
     );
     csv += rowData.join(',') + '\n';
   });
@@ -1114,7 +1084,7 @@ function exportMonthlyCsv() {
     return;
   }
   let csv =
-    '#,Employee,4 Weeks Ago,3 Weeks Ago,2 Weeks Ago,Last Week,This Week,Monthly Total (Hrs),Commission ($),Type,Rate/Salary,Est. Gross Pay ($),Tax Status,Est. Taxes ($),Est. Net Pay ($)\n';
+    '#,Employee,4 Weeks Ago,3 Weeks Ago,2 Weeks Ago,Last Week,This Week,Monthly Total (Hrs),Commission ($),Type,Rate/Salary,Est. Gross Pay ($),Tax Status,Est. Taxes ($),Est. Net Pay ($),System Auto-Sweep Flags (monthly)\n';
   let count = 1;
   rows.forEach((row) => {
     const cols = row.querySelectorAll('td');
@@ -1131,6 +1101,7 @@ function exportMonthlyCsv() {
     const taxStatus = emp ? emp.tax_status || 'Single' : 'Single';
     const estTaxes = calculateEstimatedTaxes(estGross, taxStatus, isSalary, 12);
     const estNet = Math.max(0, estGross - estTaxes);
+    const autoSweepCount = parseInt(row.dataset.autoSweepCount || '0', 10) || 0;
 
     let rowData = [`"${count++}"`];
     for (let i = 0; i < 7; i++) {
@@ -1146,6 +1117,7 @@ function exportMonthlyCsv() {
       `"${taxStatus}"`,
       `"${estTaxes.toFixed(2)}"`,
       `"${estNet.toFixed(2)}"`,
+      `"${autoSweepCount > 0 ? `AUTO_SWEEP x${autoSweepCount}` : ''}"`,
     );
     csv += rowData.join(',') + '\n';
   });
@@ -2160,7 +2132,7 @@ export function init() {
           .select('id, name, is_salary');
         const { data: logsData, error: lErr } = await window.supabaseClient
           .from('time_logs')
-          .select('user_id, action, created_at')
+          .select('user_id, action, created_at, edited_by_manager')
           .order('created_at', { ascending: true });
         if (uErr || lErr) throw new Error('Fetch failed');
 
@@ -2175,6 +2147,7 @@ export function init() {
             status: 'OUT',
             lastIn: null,
             is_salary: u.is_salary || false,
+            autoSweepWeek: 0,
           };
         });
 
@@ -2182,6 +2155,13 @@ export function init() {
           const emp = empMap[log.user_id];
           if (!emp) return;
           const time = new Date(log.created_at).getTime();
+          if (
+            (log.action === 'OUT' || log.action === 'CLOCK_OUT') &&
+            log.edited_by_manager === SYSTEM_AUTO_SWEEP_LABEL &&
+            time >= startOfWeek
+          ) {
+            emp.autoSweepWeek += 1;
+          }
           if (log.action === 'IN' || log.action === 'END_LUNCH') {
             emp.status = 'IN';
             emp.lastIn = time;
@@ -2214,12 +2194,13 @@ export function init() {
         const nextE = new Date(startOfWeek + 13 * 86400000);
         let nextLabel = customPayrollFormat.next || `${fmt(nextS)} - ${fmt(nextE)}`;
 
-        let csv = `#,Employee Name,${currentLabel},${nextLabel}\n`;
+        let csv = `#,Employee Name,${currentLabel},${nextLabel},System Auto-Sweep Flags (week)\n`;
         let count = 1;
         Object.values(empMap).forEach((emp) => {
           const hrs = emp.thisWeekMs / 3600000;
           if (hrs === 0 && !emp.is_salary) return;
-          csv += `"${count++}","${formatNameLastFirst(emp.name)}",${hrs.toFixed(2)},0.00\n`;
+          const sweepFlag = emp.autoSweepWeek > 0 ? `AUTO_SWEEP x${emp.autoSweepWeek}` : '';
+          csv += `"${count++}","${formatNameLastFirst(emp.name)}",${hrs.toFixed(2)},0.00,"${sweepFlag}"\n`;
         });
 
         const safe = currentLabel

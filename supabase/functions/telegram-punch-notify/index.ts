@@ -1,9 +1,11 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import {
+  assertWebhookSecret,
+  getTelegramBotToken,
+  getTelegramChatId,
+} from '../_shared/secrets.mjs';
 
-const TELEGRAM_BOT_TOKEN = '8729010258:AAEh2We1rFbEiC1WoEbz0Gz5qOyDr5Kyo4c';
-const TELEGRAM_CHAT_ID = '-5595038862';
-const WEBHOOK_SECRET = 'lcw-punch-notify-2026';
 const TZ = 'America/Chicago';
 
 const ACTION_LABELS: Record<string, string> = {
@@ -14,7 +16,7 @@ const ACTION_LABELS: Record<string, string> = {
 };
 
 Deno.serve(async (req: Request) => {
-  if (req.headers.get('x-webhook-secret') !== WEBHOOK_SECRET) {
+  if (!assertWebhookSecret(req)) {
     return new Response('Unauthorized', { status: 401 });
   }
 
@@ -55,10 +57,10 @@ Deno.serve(async (req: Request) => {
 
     const message = `${name} ${ACTION_LABELS[action]} at ${time} on ${dateLabel}`;
 
-    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    const res = await fetch(`https://api.telegram.org/bot${getTelegramBotToken()}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message }),
+      body: JSON.stringify({ chat_id: getTelegramChatId(), text: message }),
     });
 
     if (!res.ok) {
