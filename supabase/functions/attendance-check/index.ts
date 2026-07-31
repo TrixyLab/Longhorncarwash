@@ -6,10 +6,11 @@ import {
   parseShift,
   formatShiftMins,
 } from '../_shared/schedule.mjs';
-
-const BOT = '8729010258:AAEh2We1rFbEiC1WoEbz0Gz5qOyDr5Kyo4c';
-const CHAT = '-5595038862';
-const SECRET = 'lcw-punch-notify-2026';
+import {
+  assertWebhookSecret,
+  getTelegramBotToken,
+  getTelegramChatId,
+} from '../_shared/secrets.mjs';
 
 function nowCT() {
   const s = new Date().toLocaleString('en-US', {
@@ -28,15 +29,15 @@ function nowCT() {
 }
 
 async function tg(msg: string) {
-  await fetch(`https://api.telegram.org/bot${BOT}/sendMessage`, {
+  await fetch(`https://api.telegram.org/bot${getTelegramBotToken()}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: CHAT, text: msg }),
+    body: JSON.stringify({ chat_id: getTelegramChatId(), text: msg }),
   });
 }
 
 Deno.serve(async (req: Request) => {
-  if (req.headers.get('x-webhook-secret') !== SECRET) {
+  if (!assertWebhookSecret(req)) {
     return new Response('Unauthorized', { status: 401 });
   }
   const sb = createClient(
@@ -71,8 +72,6 @@ Deno.serve(async (req: Request) => {
 
     const status: Record<string, string> = {};
     for (const l of logs ?? []) {
-      // Last punch in the lookback window (not only same calendar day) so an
-      // overnight open IN still counts as stillIn for forgot-clock-out alerts.
       status[l.user_id] = l.action;
     }
 
@@ -86,7 +85,11 @@ Deno.serve(async (req: Request) => {
       .from('notifications_sent')
       .select('user_id,notification_type')
       .eq('shift_date', date);
-    const sentSet = new Set((sent ?? []).map((n: { user_id: string; notification_type: string }) => `${n.user_id}:${n.notification_type}`));
+    const sentSet = new Set(
+      (sent ?? []).map(
+        (n: { user_id: string; notification_type: string }) => `${n.user_id}:${n.notification_type}`,
+      ),
+    );
 
     const dateLabel = new Date(`${date}T12:00:00`).toLocaleDateString('en-US', {
       weekday: 'short',
@@ -94,17 +97,13 @@ Deno.serve(async (req: Request) => {
       day: 'numeric',
     });
 
-    // Per-employee lookup (same as auto-sweep): match today's M/D, never steal
-    // next/last week's same weekday for late / forgot Telegram alerts.
     for (const user of users) {
       if (user.is_salary) continue;
       const shiftStr = findShiftForUser(scheds, user.name, now, TZ);
       const shift = parseShift(shiftStr);
       if (!shift) continue;
 
-      // For overnight ends (e + 24h), compare against mins and mins+24h.
       const endCheck = shift.e > 24 * 60 ? mins + 24 * 60 : mins;
-
       const last = status[user.id] ?? null;
       const stillIn =
         last === 'IN' ||

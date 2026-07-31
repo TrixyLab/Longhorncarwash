@@ -22,6 +22,12 @@ test('shared parseShift: overnight end is after start for attendance compares', 
   assert.equal(shift.e, 25 * 60); // 1am next day
 });
 
+test('shared getAutoOutIso: early morning unscheduled uses store close not +8', async () => {
+  const { getAutoOutIso } = await import('../supabase/functions/_shared/schedule.mjs');
+  const clockIn = new Date('2026-07-31T11:00:00Z'); // Fri 6:00 AM CDT
+  assert.equal(getAutoOutIso(clockIn, null), '2026-08-01T01:00:00.000Z');
+});
+
 test('shared findShiftForUser: Telegram path must not steal next-week Friday', () => {
   const friJul31 = new Date('2026-07-31T18:00:00Z');
   const schedules = [

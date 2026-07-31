@@ -4,6 +4,9 @@
 
 export const TZ = 'America/Chicago';
 export const SYSTEM_AUTO_SWEEP_LABEL = 'System Auto-Sweep';
+export const AUTO_SWEEP_CLEARED_ACTION = 'AUTO_SWEEP_CLEARED';
+export const STORE_CLOSE_HOUR_WEEKDAY = 20;
+export const STORE_CLOSE_HOUR_SUNDAY = 18;
 
 /**
  * Match a schedule header to a calendar day.
@@ -144,4 +147,142 @@ export function formatShiftMins(mins) {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
+}
+
+/** Keep in sync with modules/utils.js parseShiftTimes. */
+export function parseShiftTimes(shiftStr) {
+  if (!shiftStr || typeof shiftStr !== 'string') return null;
+  const s = shiftStr.trim();
+  if (!s || s === '-' || s.toUpperCase() === 'OFF' || s.toUpperCase() === 'OC') return null;
+  const parts = s.split(/\s*[-–]\s*/);
+  if (parts.length < 2) return null;
+  const startPart = parseTimePart(parts[0]);
+  const endPart = parseTimePart(parts[parts.length - 1]);
+  if (!startPart || !endPart) return null;
+
+  let startH;
+  let endH;
+  const startMin = startPart.minute;
+  const endMin = endPart.minute;
+
+  if (startPart.explicitAmPm && endPart.explicitAmPm) {
+    startH = applyExplicitAmPm(startPart);
+    endH = applyExplicitAmPm(endPart);
+  } else if (!startPart.explicitAmPm && !endPart.explicitAmPm) {
+    if (
+      startPart.hour >= 1 &&
+      startPart.hour <= 6 &&
+      endPart.hour >= 7 &&
+      endPart.hour <= 11 &&
+      endPart.hour > startPart.hour
+    ) {
+      startH = startPart.hour + 12;
+      endH = endPart.hour + 12;
+    } else {
+      startH = startPart.hour === 12 ? 12 : startPart.hour;
+      endH = inferBareEndHour(startH, endPart.hour);
+    }
+  } else if (!endPart.explicitAmPm) {
+    startH = applyExplicitAmPm(startPart);
+    endH = inferBareEndHour(startH, endPart.hour);
+  } else {
+    endH = applyExplicitAmPm(endPart);
+    startH = startPart.hour === 12 ? 12 : startPart.hour;
+    if (startH >= 1 && startH <= 6 && endH >= 12 && endH - startH > 12) startH += 12;
+  }
+
+  const start = { hour: startH, minute: startMin };
+  const end = { hour: endH, minute: endMin };
+  const isOvernight = end.hour < start.hour || (end.hour === start.hour && end.minute < start.minute);
+  return { start, end, isOvernight };
+}
+
+export function getChicagoIsoString(dateStr, hour, minute = 0, second = 0, millisecond = 0) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const padMs = (n) => String(n).padStart(3, '0');
+  const timePart = `${pad(hour)}:${pad(minute)}:${pad(second)}.${padMs(millisecond)}`;
+  let candidate = new Date(`${dateStr}T${timePart}-05:00`);
+  const candDay = candidate.toLocaleDateString('en-CA', { timeZone: TZ });
+  const candHour = parseInt(
+    candidate.toLocaleTimeString('en-US', { timeZone: TZ, hour: 'numeric', hour12: false }),
+    10,
+  );
+  if (candDay === dateStr && candHour === hour) return candidate.toISOString();
+  candidate = new Date(`${dateStr}T${timePart}-06:00`);
+  return candidate.toISOString();
+}
+
+export function getStoreCloseHour(dateStr) {
+  const dow = new Date(`${dateStr}T12:00:00Z`).toLocaleDateString('en-US', {
+    weekday: 'short',
+    timeZone: TZ,
+  });
+  return dow === 'Sun' ? STORE_CLOSE_HOUR_SUNDAY : STORE_CLOSE_HOUR_WEEKDAY;
+}
+
+function storeCloseAutoOutIso(logDate) {
+  const logDay = logDate.toLocaleDateString('en-CA', { timeZone: TZ });
+  const inHour = parseInt(
+    logDate.toLocaleTimeString('en-US', { timeZone: TZ, hour: 'numeric', hour12: false }),
+    10,
+  );
+  const inMin = parseInt(
+    logDate.toLocaleTimeString('en-US', { timeZone: TZ, minute: 'numeric' }),
+    10,
+  );
+  const closeHour = getStoreCloseHour(logDay);
+  let targetDay = logDay;
+  let outHour;
+  let outMin;
+  if (inHour < closeHour) {
+    outHour = closeHour;
+    outMin = 0;
+  } else {
+    outHour = (inHour + 8) % 24;
+    outMin = inMin;
+    if (inHour + 8 >= 24) {
+      const d = new Date(`${logDay}T12:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + 1);
+      targetDay = d.toISOString().split('T')[0];
+    }
+  }
+  return getChicagoIsoString(targetDay, outHour, outMin, 0, 0);
+}
+
+/** Keep in sync with modules/utils.js getAutoOutIso. */
+export function getAutoOutIso(logDate, shiftStr) {
+  const logDay = logDate.toLocaleDateString('en-CA', { timeZone: TZ });
+  const inMs = logDate.getTime();
+  if (shiftStr) {
+    const shiftTimes = parseShiftTimes(shiftStr);
+    if (shiftTimes) {
+      let targetDay = logDay;
+      if (shiftTimes.isOvernight) {
+        const d = new Date(`${logDay}T12:00:00Z`);
+        d.setUTCDate(d.getUTCDate() + 1);
+        targetDay = d.toISOString().split('T')[0];
+      }
+      const scheduledIso = getChicagoIsoString(
+        targetDay,
+        shiftTimes.end.hour,
+        shiftTimes.end.minute,
+        0,
+        0,
+      );
+      if (new Date(scheduledIso).getTime() > inMs) return scheduledIso;
+      return storeCloseAutoOutIso(logDate);
+    }
+  }
+  return storeCloseAutoOutIso(logDate);
+}
+
+/** Keep in sync with modules/utils.js hasForgottenClockOut. */
+export function hasForgottenClockOut(logDate, shiftStr, now = new Date()) {
+  const elapsedHours = (now.getTime() - logDate.getTime()) / (1000 * 60 * 60);
+  if (elapsedHours < 2) return false;
+  const autoOutTime = new Date(getAutoOutIso(logDate, shiftStr)).getTime();
+  if (now.getTime() >= autoOutTime + 2 * 60 * 60 * 1000) return true;
+  const scheduled = shiftStr ? parseShiftTimes(shiftStr) : null;
+  if (!scheduled && elapsedHours >= 14) return true;
+  return false;
 }

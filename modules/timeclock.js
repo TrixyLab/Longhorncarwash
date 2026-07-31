@@ -1190,16 +1190,27 @@ export function init() {
       const TZ = 'America/Chicago';
       const PUNCH_ACTIONS = ['IN', 'OUT', 'START_LUNCH', 'END_LUNCH', 'CLOCK_IN', 'CLOCK_OUT'];
       const IN_LIKE = ['IN', 'CLOCK_IN', 'END_LUNCH', 'START_LUNCH'];
-      const { data: badSweeps, error: sweepErr } = await window.supabaseClient
-        .from('time_logs')
-        .select('id, user_id, created_at')
-        .eq('edited_by_manager', SYSTEM_AUTO_SWEEP_LABEL)
-        .order('created_at', { ascending: false })
-        .limit(100);
+      const PAGE = 200;
+      const MAX_PAGES = 10; // up to 2000 recent System Auto-Sweep rows
+      const allBad = [];
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const from = page * PAGE;
+        const to = from + PAGE - 1;
+        const { data: badSweeps, error: sweepErr } = await window.supabaseClient
+          .from('time_logs')
+          .select('id, user_id, created_at')
+          .eq('edited_by_manager', SYSTEM_AUTO_SWEEP_LABEL)
+          .order('created_at', { ascending: false })
+          .range(from, to);
+        if (sweepErr) return;
+        if (!badSweeps?.length) break;
+        allBad.push(...badSweeps);
+        if (badSweeps.length < PAGE) break;
+      }
 
-      if (sweepErr || !badSweeps || badSweeps.length === 0) return;
+      if (allBad.length === 0) return;
 
-      for (const sweepLog of badSweeps) {
+      for (const sweepLog of allBad) {
         const user = users.find((u) => u.id === sweepLog.user_id);
         const sweepDate = new Date(sweepLog.created_at);
 

@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../context/AuthContext';
 import { colors, spacing, radius, font } from '../../theme';
 import { TimeLog, User, ActionType } from '../../types';
 
@@ -45,6 +46,7 @@ interface EmployeeRow {
 }
 
 export function TimesheetScreen() {
+  const { user } = useAuth();
   const [rows, setRows] = useState<EmployeeRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedEmployee, setSelectedEmployee] = useState<EmployeeRow | null>(null);
@@ -150,12 +152,13 @@ export function TimesheetScreen() {
 
   async function addLog() {
     if (!selectedEmployee || !newTime) { Alert.alert('Error', 'Enter a time.'); return; }
+    const manager = user?.name ?? 'Manager';
     setAddingLog(true);
     const { error } = await supabase.from('time_logs').insert({
       user_id: selectedEmployee.user.id,
       action: newAction,
       created_at: new Date(newTime).toISOString(),
-      edited_by_manager: true,
+      edited_by_manager: manager,
     });
     setAddingLog(false);
     if (error) { Alert.alert('Error', 'Could not add log.'); return; }
@@ -165,7 +168,7 @@ export function TimesheetScreen() {
       user_id: selectedEmployee.user.id,
       action: newAction as any,
       created_at: new Date(newTime).toISOString(),
-      edited_by_manager: true,
+      edited_by_manager: manager,
     };
     const updatedLogs = [...selectedEmployee.logs, newLogItem];
     setSelectedEmployee({ ...selectedEmployee, logs: updatedLogs, hours: calcHours(updatedLogs) });
