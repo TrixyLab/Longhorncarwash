@@ -23,7 +23,13 @@ Deno.serve(async (req: Request) => {
 
   try {
     const body = await req.json();
-    const { user_id, action, created_at, edited_by_manager: editedFromBody } = body;
+    // DB webhooks may send { record: {...} } or a flat punch payload.
+    const record = body?.record ?? body;
+    const user_id = record?.user_id ?? body?.user_id;
+    const action = record?.action ?? body?.action;
+    const created_at = record?.created_at ?? body?.created_at;
+    const punchId = record?.id ?? body?.id;
+    const editedFromBody = record?.edited_by_manager ?? body?.edited_by_manager;
 
     if (!ACTION_LABELS[action]) {
       return new Response('Skipped', { status: 200 });
@@ -45,7 +51,19 @@ Deno.serve(async (req: Request) => {
 
     let editedBy = editedFromBody ?? null;
     let stampIso = created_at ?? punchDate.toISOString();
-    if (editedBy == null && user_id && created_at) {
+
+    // Prefer lookup by id (stable); fall back to user/action/created_at.
+    if (punchId) {
+      const { data: punch } = await supabase
+        .from('time_logs')
+        .select('edited_by_manager, created_at')
+        .eq('id', punchId)
+        .maybeSingle();
+      if (punch) {
+        editedBy = punch.edited_by_manager ?? editedBy;
+        stampIso = punch.created_at ?? stampIso;
+      }
+    } else if (editedBy == null && user_id && created_at) {
       const { data: punch } = await supabase
         .from('time_logs')
         .select('edited_by_manager, created_at')
@@ -57,6 +75,26 @@ Deno.serve(async (req: Request) => {
       if (punch) {
         editedBy = punch.edited_by_manager;
         stampIso = punch.created_at ?? stampIso;
+      }
+    }
+
+    const isAutoSweep =
+      (action === 'OUT' || action === 'CLOCK_OUT') &&
+      editedBy === SYSTEM_AUTO_SWEEP_LABEL;
+
+    // Stale backdated auto-sweep: employee already punched IN after this OUT
+    // stamp (e.g. 8am System Auto-Sweep while they clocked in at 11am). Don't
+    // spam Telegram as if they just clocked out.
+    if (isAutoSweep && user_id) {
+      const { data: laterIn } = await supabase
+        .from('time_logs')
+        .select('id')
+        .eq('user_id', user_id)
+        .in('action', ['IN', 'CLOCK_IN'])
+        .gt('created_at', stampIso)
+        .limit(1);
+      if (laterIn?.length) {
+        return new Response('Skipped stale auto-sweep', { status: 200 });
       }
     }
 
@@ -75,10 +113,9 @@ Deno.serve(async (req: Request) => {
       timeZone: TZ,
     });
 
-    const message =
-      (action === 'OUT' || action === 'CLOCK_OUT') && editedBy === SYSTEM_AUTO_SWEEP_LABEL
-        ? `${name} was auto clocked OUT at ${time} on ${dateLabel} (${SYSTEM_AUTO_SWEEP_LABEL})`
-        : `${name} ${ACTION_LABELS[action]} at ${time} on ${dateLabel}`;
+    const message = isAutoSweep
+      ? `${name} was auto clocked OUT at ${time} on ${dateLabel} (${SYSTEM_AUTO_SWEEP_LABEL})`
+      : `${name} ${ACTION_LABELS[action]} at ${time} on ${dateLabel}`;
 
     const res = await fetch(`https://api.telegram.org/bot${getTelegramBotToken()}/sendMessage`, {
       method: 'POST',

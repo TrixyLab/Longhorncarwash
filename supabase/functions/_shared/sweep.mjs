@@ -12,6 +12,7 @@ export {
   getStoreCloseHour,
   getAutoOutIso,
   hasForgottenClockOut,
+  isSafeAutoSweepOutInsert,
   findShiftForUser,
   findScheduleDayIndex,
 } from './schedule.mjs';
