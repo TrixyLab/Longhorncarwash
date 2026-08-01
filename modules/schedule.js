@@ -1,4 +1,4 @@
-import { state, showToast, parseShiftHours } from './utils.js';
+import { state, showToast, parseShiftHours, confirmAppDialog, normalizeScheduleCellValue } from './utils.js';
 
 function updateCellStyles(input) {
   const val = input.value.trim().toUpperCase();
@@ -41,8 +41,15 @@ function recalculateRowTotal(tr) {
 
 function bindEditorRowEvents(tr) {
   tr.querySelectorAll('.sched-cell').forEach((input) => {
+    if (!input.placeholder) input.placeholder = '7am-8pm';
     updateCellStyles(input);
     input.addEventListener('input', () => {
+      updateCellStyles(input);
+      recalculateRowTotal(tr);
+    });
+    input.addEventListener('blur', () => {
+      const next = normalizeScheduleCellValue(input.value);
+      if (next !== input.value) input.value = next;
       updateCellStyles(input);
       recalculateRowTotal(tr);
     });
@@ -619,7 +626,7 @@ export function init() {
                 .fill(0)
                 .map(
                   () =>
-                    `<td><input type="text" class="input-field sched-cell" placeholder="-" style="padding:5px;text-align:center;margin-bottom:0;"></td>`,
+                    `<td><input type="text" class="input-field sched-cell" placeholder="7am-8pm" style="padding:5px;text-align:center;margin-bottom:0;"></td>`,
                 )
                 .join('');
               tr.innerHTML = `<td><strong>${u.name}</strong></td>${inputs}<td style="text-align:center;font-weight:bold;">-</td>`;
@@ -674,7 +681,9 @@ export function init() {
     const rows = [];
     scheduleEditorBody?.querySelectorAll('tr').forEach((tr) => {
       const employee = tr.querySelector('td strong')?.innerText || '';
-      const shifts = Array.from(tr.querySelectorAll('.sched-cell')).map((i) => i.value || '-');
+      const shifts = Array.from(tr.querySelectorAll('.sched-cell')).map(
+        (i) => normalizeScheduleCellValue(i.value || '-'),
+      );
       rows.push({ employee, shifts });
     });
     return { weekRange, headers, rows };
@@ -706,15 +715,18 @@ export function init() {
             })
             .map((r) => r.employee);
 
-          if (
-            conflicts.length > 0 &&
-            !confirm(
-              `Warning: These employees have approved time-off: ${conflicts.join(', ')}. Proceed?`,
-            )
-          ) {
-            btnSubmitSchedule.disabled = false;
-            btnSubmitSchedule.style.opacity = '1';
-            return;
+          if (conflicts.length > 0) {
+            const ok = await confirmAppDialog({
+              title: 'Time-Off Conflict',
+              message: `Warning: These employees have approved time-off: ${conflicts.join(', ')}. Proceed?`,
+              confirmLabel: 'Proceed',
+              tone: 'primary',
+            });
+            if (!ok) {
+              btnSubmitSchedule.disabled = false;
+              btnSubmitSchedule.style.opacity = '1';
+              return;
+            }
           }
         }
       } catch (e) {
@@ -852,7 +864,7 @@ export function init() {
             const cellsHtml = shifts
               .map((s) => {
                 rowTotal += parseShiftHours(s);
-                return `<td><input type="text" class="input-field sched-cell" value="${s}" style="padding:5px;text-align:center;margin-bottom:0;"></td>`;
+                return `<td><input type="text" class="input-field sched-cell" value="${s}" placeholder="7am-8pm" style="padding:5px;text-align:center;margin-bottom:0;"></td>`;
               })
               .join('');
             const tr = document.createElement('tr');
@@ -877,12 +889,13 @@ export function init() {
         }
       } else if (e.target.classList.contains('btn-publish-schedule')) {
         const id = e.target.dataset.id;
-        if (
-          !confirm(
-            'Publish this schedule? It will go live for employees and they will be notified.',
-          )
-        )
-          return;
+        const ok = await confirmAppDialog({
+          title: 'Publish Schedule',
+          message: 'Publish this schedule? It will go live for employees and they will be notified.',
+          confirmLabel: 'Publish',
+          tone: 'primary',
+        });
+        if (!ok) return;
         e.target.disabled = true;
         e.target.style.opacity = '0.5';
         try {
@@ -923,7 +936,12 @@ export function init() {
           e.target.style.opacity = '1';
         }
       } else if (e.target.classList.contains('btn-delete-schedule')) {
-        if (!confirm('Delete this schedule?')) return;
+        const ok = await confirmAppDialog({
+          title: 'Delete Schedule',
+          message: 'Delete this schedule?',
+          confirmLabel: 'Delete Schedule',
+        });
+        if (!ok) return;
         try {
           const { error } = await window.supabaseClient
             .from('schedules')
@@ -1063,7 +1081,7 @@ export function init() {
           const cells = r.shifts
             .map((s) => {
               rowTotal += parseShiftHours(s);
-              return `<td><input type="text" class="input-field sched-cell" value="${s || '-'}" style="padding:5px;text-align:center;margin-bottom:0;" /></td>`;
+              return `<td><input type="text" class="input-field sched-cell" value="${s || '-'}" placeholder="7am-8pm" style="padding:5px;text-align:center;margin-bottom:0;" /></td>`;
             })
             .join('');
           const tr = document.createElement('tr');
@@ -1111,7 +1129,7 @@ export function init() {
           const cellsHtml = shifts
             .map((s) => {
               rowTotal += parseShiftHours(s);
-              return `<td><input type="text" class="input-field sched-cell" value="${s}" style="padding:5px;text-align:center;margin-bottom:0;"></td>`;
+              return `<td><input type="text" class="input-field sched-cell" value="${s}" placeholder="7am-8pm" style="padding:5px;text-align:center;margin-bottom:0;"></td>`;
             })
             .join('');
           const tr = document.createElement('tr');

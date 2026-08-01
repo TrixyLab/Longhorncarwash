@@ -37,7 +37,6 @@ Deno.serve(async (req: Request) => {
       .neq('status', 'pending')
       .order('created_at', { ascending: false })
       .limit(10);
-
     let swept = 0;
 
     for (const u of users) {

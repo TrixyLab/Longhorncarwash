@@ -136,6 +136,56 @@ export function showToast(msg, type = 'success') {
   setTimeout(() => toast.classList.add('hidden'), 3000);
 }
 
+/**
+ * In-app confirm dialog. Prefer this over window.confirm() —
+ * Chromium/Electron's "Prevent this page from creating additional dialogs"
+ * checkbox makes later confirm() calls always return false.
+ */
+export function confirmAppDialog({
+  title = 'Confirm',
+  message = 'Are you sure?',
+  confirmLabel = 'Confirm',
+  tone = 'danger',
+} = {}) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('modal-confirm');
+    const titleEl = document.getElementById('confirm-title');
+    const msgEl = document.getElementById('confirm-message');
+    const btnOk = document.getElementById('btn-confirm-ok');
+    const btnCancel = document.getElementById('btn-confirm-cancel');
+    if (!modal || !btnOk || !btnCancel) {
+      resolve(window.confirm(message));
+      return;
+    }
+
+    if (titleEl) titleEl.textContent = title;
+    if (msgEl) msgEl.textContent = message;
+    btnOk.textContent = confirmLabel;
+    btnOk.classList.remove('btn-danger', 'btn-primary');
+    btnOk.classList.add(tone === 'primary' ? 'btn-primary' : 'btn-danger');
+
+    if (modal.parentElement !== document.body) document.body.appendChild(modal);
+
+    const finish = (ok) => {
+      modal.classList.add('hidden');
+      btnOk.removeEventListener('click', onOk);
+      btnCancel.removeEventListener('click', onCancel);
+      modal.removeEventListener('click', onBackdrop);
+      resolve(ok);
+    };
+    const onOk = () => finish(true);
+    const onCancel = () => finish(false);
+    const onBackdrop = (e) => {
+      if (e.target === modal) finish(false);
+    };
+
+    btnOk.addEventListener('click', onOk);
+    btnCancel.addEventListener('click', onCancel);
+    modal.addEventListener('click', onBackdrop);
+    modal.classList.remove('hidden');
+  });
+}
+
 // --- Date Utilities ---
 export function getStartOfWeek() {
   const d = new Date();
@@ -356,7 +406,7 @@ function parseShiftTimePart(timeStr) {
   const isAM = t.includes('am') || (t.endsWith('a') && !t.includes('pm'));
   t = t.replace(/[a-z]/g, '');
   const [hStr, mStr] = t.split(':');
-  let h = parseInt(hStr, 10);
+  const h = parseInt(hStr, 10);
   let m = parseInt(mStr || '0', 10);
   if (isNaN(h)) return null;
   if (isNaN(m)) m = 0;
@@ -457,6 +507,34 @@ export function parseShiftHours(shiftStr) {
   let end = times.end.hour + times.end.minute / 60;
   if (times.isOvernight) end += 24;
   return Math.max(0, end - start);
+}
+
+function formatClockPart(hour, minute) {
+  const h12 = ((hour + 11) % 12) + 1;
+  const ampm = hour >= 12 ? 'pm' : 'am';
+  if (!minute) return `${h12}${ampm}`;
+  return `${h12}:${String(minute).padStart(2, '0')}${ampm}`;
+}
+
+/**
+ * Normalize a schedule cell to explicit am/pm (e.g. "1-8" → "1pm-8pm").
+ * OFF / OC / "-" / blank are returned in canonical form; unparseable strings
+ * are returned trimmed unchanged.
+ */
+export function formatShiftTimes(shiftStr) {
+  if (shiftStr == null) return '-';
+  const raw = String(shiftStr).trim();
+  if (!raw || raw === '-') return '-';
+  const upper = raw.toUpperCase();
+  if (upper === 'OFF' || upper === 'OC') return upper;
+  const times = parseShiftTimes(raw);
+  if (!times) return raw;
+  return `${formatClockPart(times.start.hour, times.start.minute)}-${formatClockPart(times.end.hour, times.end.minute)}`;
+}
+
+/** Normalize a schedule input on blur; returns the value written back. */
+export function normalizeScheduleCellValue(raw) {
+  return formatShiftTimes(raw);
 }
 
 export function getChicagoIsoString(dateStr, hour, minute = 0, second = 0, millisecond = 0) {

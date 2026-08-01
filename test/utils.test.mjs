@@ -22,6 +22,8 @@ import {
   getMissedPunchRequestError,
   buildAutoSweepClearedRow,
   AUTO_SWEEP_CLEARED_ACTION,
+  formatShiftTimes,
+  normalizeScheduleCellValue,
 } from '../modules/utils.js';
 
 const log = (action, t) => ({ action, created_at: t });
@@ -287,6 +289,16 @@ test('buildAutoSweepClearedRow: places marker one second after the open IN', () 
   assert.equal(row.action, AUTO_SWEEP_CLEARED_ACTION);
   assert.equal(row.created_at, '2026-07-27T18:59:01.000Z');
   assert.equal(row.edited_by_manager, 'Manager cleared auto-sweep');
+});
+
+test('formatShiftTimes: normalizes bare afternoon cells to explicit am/pm', () => {
+  assert.equal(formatShiftTimes('1-8'), '1pm-8pm');
+  assert.equal(formatShiftTimes('2-8'), '2pm-8pm');
+  assert.equal(formatShiftTimes('7-8'), '7am-8pm');
+  assert.equal(formatShiftTimes('10am-6'), '10am-6pm');
+  assert.equal(formatShiftTimes('OFF'), 'OFF');
+  assert.equal(formatShiftTimes(''), '-');
+  assert.equal(normalizeScheduleCellValue(' 1-8 '), '1pm-8pm');
 });
 
 test('getStartOfWeek: always a Wednesday at midnight', () => {
