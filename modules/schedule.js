@@ -39,6 +39,31 @@ function recalculateRowTotal(tr) {
   }
 }
 
+// A cell counts as "staffed" when it holds a real shift (not blank, '-', or OFF).
+function isStaffedShift(val) {
+  const v = (val || '').trim().toUpperCase();
+  return v !== '' && v !== '-' && v !== 'OFF';
+}
+
+// Tally, per day column, how many employees are scheduled, and paint the editor's
+// coverage footer: red for an unstaffed day, amber for a lone worker, green otherwise.
+function recalculateCoverage() {
+  const body = document.getElementById('schedule-editor-body');
+  const cells = document.querySelectorAll('#schedule-coverage-row .coverage-cell');
+  if (!body || !cells.length) return;
+  const counts = Array(cells.length).fill(0);
+  body.querySelectorAll('tr').forEach((tr) => {
+    tr.querySelectorAll('.sched-cell').forEach((inp, idx) => {
+      if (idx < counts.length && isStaffedShift(inp.value)) counts[idx] += 1;
+    });
+  });
+  cells.forEach((cell, idx) => {
+    const n = counts[idx] || 0;
+    cell.textContent = n;
+    cell.style.color = n === 0 ? 'var(--danger)' : n === 1 ? '#f39c12' : 'var(--success)';
+  });
+}
+
 function bindEditorRowEvents(tr) {
   tr.querySelectorAll('.sched-cell').forEach((input) => {
     if (!input.placeholder) input.placeholder = '7am-8pm';
@@ -46,6 +71,7 @@ function bindEditorRowEvents(tr) {
     input.addEventListener('input', () => {
       updateCellStyles(input);
       recalculateRowTotal(tr);
+      recalculateCoverage();
     });
     input.addEventListener('blur', () => {
       const next = normalizeScheduleCellValue(input.value);
@@ -54,6 +80,9 @@ function bindEditorRowEvents(tr) {
       recalculateRowTotal(tr);
     });
   });
+  // Rows are appended before they're bound, so recomputing here keeps the
+  // coverage footer in sync after every population path (new/edit/template/autofill).
+  recalculateCoverage();
 }
 
 export async function loadSchedules() {
@@ -149,6 +178,26 @@ export async function loadSchedules() {
       return;
     }
 
+    // Parsed live schedules, newest first — the baseline a pending draft is
+    // diffed against so managers can see what changed before publishing.
+    const publishedParsed = data
+      .filter((s) => s.status === 'published')
+      .map((s) => {
+        try {
+          return { created_at: s.created_at, p: JSON.parse(s.content) };
+        } catch (e) {
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+    // Normalize a cell so blank/'-'/OFF all compare equal.
+    const normShift = (v) => {
+      const t = (v || '').trim().toUpperCase();
+      return t === '' || t === '-' ? 'OFF' : t;
+    };
+
     data.forEach((sched, index) => {
       let parsed;
       try {
@@ -158,6 +207,29 @@ export async function loadSchedules() {
       }
       const weekRange = parsed ? parsed.weekRange || 'Weekly Schedule' : 'Weekly Schedule';
       const isPending = sched.status === 'pending';
+
+      // Build a per-employee baseline for a pending draft: the live schedule for
+      // the same week if one exists, otherwise the most recent live schedule.
+      let baselineMap = null;
+      if (isPending && parsed) {
+        const sameWeek = publishedParsed.filter((x) => x.p.weekRange === parsed.weekRange);
+        const baseline = (sameWeek.length ? sameWeek : publishedParsed)[0];
+        if (baseline) {
+          baselineMap = {};
+          (baseline.p.rows || []).forEach((r) => {
+            baselineMap[r.employee.trim().toLowerCase()] = r.shifts || [];
+          });
+        }
+      }
+      // Returns true when a draft cell differs from the baseline (a new employee
+      // not in the baseline counts as changed). No baseline → nothing to compare.
+      const cellChanged = (employee, dayIdx, value) => {
+        if (!baselineMap) return false;
+        const base = baselineMap[employee.trim().toLowerCase()];
+        if (!base) return isStaffedShift(value);
+        return normShift(base[dayIdx]) !== normShift(value);
+      };
+      let draftChangeCount = 0;
 
       if (scheduleSelector) {
         const btn = document.createElement('button');
@@ -218,10 +290,15 @@ export async function loadSchedules() {
             .map((r) => {
               let rowTotal = 0;
               const cellsHtml = r.shifts
-                .map((s) => {
+                .map((s, dayIdx) => {
                   rowTotal += parseShiftHours(s);
                   const isOff = !s || s === '-' || s.trim().toUpperCase() === 'OFF';
-                  return `<td class="sched-shift-cell${isOff ? ' sched-off' : ''}">${s || '-'}</td>`;
+                  const changed = cellChanged(r.employee, dayIdx, s);
+                  if (changed) draftChangeCount++;
+                  const changedAttr = changed
+                    ? ' data-changed="1" title="Changed from the live schedule" style="box-shadow:inset 0 0 0 2px #f39c12;border-radius:4px;"'
+                    : '';
+                  return `<td class="sched-shift-cell${isOff ? ' sched-off' : ''}"${changedAttr}>${s || '-'}</td>`;
                 })
                 .join('');
               const swapBtn =
@@ -428,8 +505,15 @@ export async function loadSchedules() {
               minute: '2-digit',
             })}`
           : '';
+      const draftChangeSummary = isPending
+        ? baselineMap
+          ? draftChangeCount > 0
+            ? ` · ${draftChangeCount} change${draftChangeCount === 1 ? '' : 's'} vs live`
+            : ' · no changes vs live'
+          : ' · new week'
+        : '';
       const statusLabel = isPending
-        ? `<span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;"><span style="background:rgba(243,156,18,0.15);color:#f39c12;border:1px solid #f39c12;padding:2px 10px;border-radius:12px;font-weight:bold;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.5px;">Pending · Not live</span><span>Draft created ${time}${scheduledPublishText}</span></span>`
+        ? `<span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;"><span style="background:rgba(243,156,18,0.15);color:#f39c12;border:1px solid #f39c12;padding:2px 10px;border-radius:12px;font-weight:bold;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.5px;">Pending · Not live</span><span>Draft created ${time}${scheduledPublishText}${draftChangeSummary}</span></span>`
         : `<span>Posted on ${time}</span>`;
 
       div.innerHTML = `<div style="color:var(--text-muted);font-size:0.85rem;margin-bottom:15px;border-bottom:1px solid var(--border);padding-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
@@ -731,6 +815,24 @@ export function init() {
         }
       } catch (e) {
         console.error('Conflict detection error', e);
+      }
+
+      // Coverage check: flag any day with nobody scheduled before saving.
+      const { headers } = scheduleData;
+      const uncoveredDays = [];
+      headers.forEach((h, dayIdx) => {
+        const staffed = rows.some((r) => isStaffedShift(r.shifts[dayIdx]));
+        if (!staffed) uncoveredDays.push(h && h !== '-' ? h : `Day ${dayIdx + 1}`);
+      });
+      if (
+        uncoveredDays.length > 0 &&
+        !confirm(
+          `Warning: no one is scheduled on ${uncoveredDays.join(', ')}. Save anyway?`,
+        )
+      ) {
+        btnSubmitSchedule.disabled = false;
+        btnSubmitSchedule.style.opacity = '1';
+        return;
       }
 
       try {
