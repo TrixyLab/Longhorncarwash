@@ -4,8 +4,10 @@ import {
   checkLocation,
   calculateTotalHoursForLogs,
   parseShiftStartTime,
+  parseShiftTimes,
   getAutoOutIso,
   hasForgottenClockOut,
+  findShiftForUser,
   getPunchTransitionError,
   getMissedPunchRequestError,
   SYSTEM_AUTO_SWEEP_LABEL,
@@ -819,8 +821,6 @@ export function init() {
       const chicagoNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
       const currentTotalMin = chicagoNow.getHours() * 60 + chicagoNow.getMinutes();
       const todayStr = `${chicagoNow.getFullYear()}-${String(chicagoNow.getMonth() + 1).padStart(2, '0')}-${String(chicagoNow.getDate()).padStart(2, '0')}`;
-      const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-      const todayAbbr = dayNames[chicagoNow.getDay()];
 
       const { data: schedules } = await window.supabaseClient
         .from('schedules')
@@ -829,29 +829,14 @@ export function init() {
         .order('created_at', { ascending: false })
         .limit(5);
 
-      if (schedules && schedules.length > 0) {
-        for (const sched of schedules) {
-          try {
-            const parsed = JSON.parse(sched.content);
-            const myRow = parsed.rows?.find((r) => r.employee === state.currentUser.name);
-            if (!myRow) continue;
+      const shiftStr = findShiftForUser(schedules, state.currentUser.name, now, 'America/Chicago');
+      if (shiftStr) {
+        const startTime = parseShiftStartTime(shiftStr);
+        if (startTime) {
+          const shiftTotalMin = startTime.hour * 60 + startTime.minute;
+          const GRACE_MIN = 5;
 
-            const todayIdx = (parsed.headers || []).findIndex(
-              (h) => h && h.toString().toUpperCase().startsWith(todayAbbr.toUpperCase()),
-            );
-            if (todayIdx < 0) continue;
-
-            const shiftStr = myRow.shifts?.[todayIdx];
-            if (!shiftStr) continue;
-
-            const startTime = parseShiftStartTime(shiftStr);
-            if (!startTime) break; // OFF — no restriction
-
-            const shiftTotalMin = startTime.hour * 60 + startTime.minute;
-            const GRACE_MIN = 5;
-
-            if (currentTotalMin >= shiftTotalMin - GRACE_MIN) break; // On time
-
+          if (currentTotalMin < shiftTotalMin - GRACE_MIN) {
             // Early — check for existing approval
             const { data: approval } = await window.supabaseClient
               .from('early_clockin_approvals')
@@ -862,43 +847,41 @@ export function init() {
               .limit(1);
 
             const approvalStatus = approval?.[0]?.status;
-            if (approvalStatus === 'approved') break; // Approved — allow
+            if (approvalStatus !== 'approved') {
+              const ampm = startTime.hour >= 12 ? 'PM' : 'AM';
+              const h12 = startTime.hour % 12 || 12;
+              const shiftDisplay = `${h12}:${String(startTime.minute).padStart(2, '0')} ${ampm}`;
 
-            const ampm = startTime.hour >= 12 ? 'PM' : 'AM';
-            const h12 = startTime.hour % 12 || 12;
-            const shiftDisplay = `${h12}:${String(startTime.minute).padStart(2, '0')} ${ampm}`;
+              if (approvalStatus === 'pending') {
+                showToast(
+                  `Shift starts at ${shiftDisplay}. Approval pending — check with your manager.`,
+                  'warning',
+                );
+                return;
+              }
+              if (approvalStatus === 'denied') {
+                showToast(
+                  `Early clock-in was denied. Your shift starts at ${shiftDisplay}.`,
+                  'error',
+                );
+                return;
+              }
 
-            if (approvalStatus === 'pending') {
-              showToast(
-                `Shift starts at ${shiftDisplay}. Approval pending — check with your manager.`,
-                'warning',
-              );
+              // No request yet — prompt
+              if (modalEarlyClockin) {
+                const el = document.getElementById('early-clockin-shift-start');
+                if (el) el.textContent = shiftDisplay;
+                modalEarlyClockin.dataset.shiftDate = todayStr;
+                modalEarlyClockin.dataset.shiftStart = shiftDisplay;
+                modalEarlyClockin.classList.remove('hidden');
+              } else {
+                showToast(
+                  `Shift starts at ${shiftDisplay}. Request early clock-in from a manager.`,
+                  'error',
+                );
+              }
               return;
             }
-            if (approvalStatus === 'denied') {
-              showToast(
-                `Early clock-in was denied. Your shift starts at ${shiftDisplay}.`,
-                'error',
-              );
-              return;
-            }
-
-            // No request yet — prompt
-            if (modalEarlyClockin) {
-              const el = document.getElementById('early-clockin-shift-start');
-              if (el) el.textContent = shiftDisplay;
-              modalEarlyClockin.dataset.shiftDate = todayStr;
-              modalEarlyClockin.dataset.shiftStart = shiftDisplay;
-              modalEarlyClockin.classList.remove('hidden');
-            } else {
-              showToast(
-                `Shift starts at ${shiftDisplay}. Request early clock-in from a manager.`,
-                'error',
-              );
-            }
-            return;
-          } catch (e) {
-            continue;
           }
         }
       }
@@ -1067,39 +1050,9 @@ export function init() {
           ) {
             const logDate = new Date(log.created_at);
 
-            // Find user's scheduled shift for logDate
-            let userShiftStr = null;
-            if (schedules && schedules.length > 0 && u.name) {
-              const mo = parseInt(logDate.toLocaleDateString('en-US', { timeZone: TZ, month: 'numeric' }), 10);
-              const dy = parseInt(logDate.toLocaleDateString('en-US', { timeZone: TZ, day: 'numeric' }), 10);
-              const dayAbbr = logDate.toLocaleDateString('en-US', { timeZone: TZ, weekday: 'short' });
-
-              for (const sched of schedules) {
-                try {
-                  const parsed = JSON.parse(sched.content);
-                  const myRow = parsed.rows?.find(
-                    (r) => r.employee?.trim().toLowerCase() === u.name.trim().toLowerCase(),
-                  );
-                  if (!myRow) continue;
-
-                  const dayIdx = (parsed.headers || []).findIndex((h) => {
-                    if (!h) return false;
-                    const hStr = h.toString();
-                    if (hStr.toUpperCase().startsWith(dayAbbr.toUpperCase())) return true;
-                    const m = hStr.match(/(\d{1,2})\/(\d{1,2})/);
-                    if (m && parseInt(m[1], 10) === mo && parseInt(m[2], 10) === dy) return true;
-                    return false;
-                  });
-
-                  if (dayIdx >= 0) {
-                    userShiftStr = myRow.shifts?.[dayIdx] || null;
-                    if (userShiftStr) break;
-                  }
-                } catch (e) {
-                  // ignore
-                }
-              }
-            }
+            // Match by calendar date (not bare "Fri") so next/last week's grid
+            // cannot supply a morning end like 7-2 while today's cell is 1-8.
+            const userShiftStr = findShiftForUser(schedules, u.name, logDate, TZ);
 
             // Only sweep if the employee has actually FORGOTTEN to clock out
             if (hasForgottenClockOut(logDate, userShiftStr, now)) {
@@ -1237,16 +1190,27 @@ export function init() {
       const TZ = 'America/Chicago';
       const PUNCH_ACTIONS = ['IN', 'OUT', 'START_LUNCH', 'END_LUNCH', 'CLOCK_IN', 'CLOCK_OUT'];
       const IN_LIKE = ['IN', 'CLOCK_IN', 'END_LUNCH', 'START_LUNCH'];
-      const { data: badSweeps, error: sweepErr } = await window.supabaseClient
-        .from('time_logs')
-        .select('id, user_id, created_at')
-        .eq('edited_by_manager', SYSTEM_AUTO_SWEEP_LABEL)
-        .order('created_at', { ascending: false })
-        .limit(100);
+      const PAGE = 200;
+      const MAX_PAGES = 10; // up to 2000 recent System Auto-Sweep rows
+      const allBad = [];
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const from = page * PAGE;
+        const to = from + PAGE - 1;
+        const { data: badSweeps, error: sweepErr } = await window.supabaseClient
+          .from('time_logs')
+          .select('id, user_id, created_at')
+          .eq('edited_by_manager', SYSTEM_AUTO_SWEEP_LABEL)
+          .order('created_at', { ascending: false })
+          .range(from, to);
+        if (sweepErr) return;
+        if (!badSweeps?.length) break;
+        allBad.push(...badSweeps);
+        if (badSweeps.length < PAGE) break;
+      }
 
-      if (sweepErr || !badSweeps || badSweeps.length === 0) return;
+      if (allBad.length === 0) return;
 
-      for (const sweepLog of badSweeps) {
+      for (const sweepLog of allBad) {
         const user = users.find((u) => u.id === sweepLog.user_id);
         const sweepDate = new Date(sweepLog.created_at);
 
@@ -1267,61 +1231,33 @@ export function init() {
 
         if (!nearbyLogs?.length) continue;
 
-        const candidateIns = nearbyLogs.filter((l) => IN_LIKE.includes(l.action));
+        const candidateIns = nearbyLogs.filter(
+          (l) => IN_LIKE.includes(l.action) && new Date(l.created_at).getTime() <= sweepDate.getTime(),
+        );
         if (!candidateIns.length) continue;
 
         let best = null;
         for (const inLog of candidateIns) {
           const inDate = new Date(inLog.created_at);
-          let userShiftStr = null;
-
-          if (schedules && schedules.length > 0 && user?.name) {
-            const mo = parseInt(inDate.toLocaleDateString('en-US', { timeZone: TZ, month: 'numeric' }), 10);
-            const dy = parseInt(inDate.toLocaleDateString('en-US', { timeZone: TZ, day: 'numeric' }), 10);
-            const dayAbbr = inDate.toLocaleDateString('en-US', { timeZone: TZ, weekday: 'short' });
-
-            for (const sched of schedules) {
-              try {
-                const parsed = JSON.parse(sched.content);
-                const myRow = parsed.rows?.find(
-                  (r) => r.employee?.trim().toLowerCase() === user.name.trim().toLowerCase(),
-                );
-                if (!myRow) continue;
-
-                const dayIdx = (parsed.headers || []).findIndex((h) => {
-                  if (!h) return false;
-                  const hStr = h.toString();
-                  if (hStr.toUpperCase().startsWith(dayAbbr.toUpperCase())) return true;
-                  const m = hStr.match(/(\d{1,2})\/(\d{1,2})/);
-                  if (m && parseInt(m[1], 10) === mo && parseInt(m[2], 10) === dy) return true;
-                  return false;
-                });
-
-                if (dayIdx >= 0) {
-                  userShiftStr = myRow.shifts?.[dayIdx] || null;
-                  if (userShiftStr) break;
-                }
-              } catch (e) {
-                // ignore
-              }
-            }
-          }
+          const userShiftStr = findShiftForUser(schedules, user?.name, inDate, TZ);
+          // Only rewrite when we have a parseable scheduled end — never treat
+          // the store-close fallback as authority over an existing labeled sweep
+          // (that rewrote legitimate morning 7-2 outs to 8pm on schedule miss).
+          if (!userShiftStr || !parseShiftTimes(userShiftStr)) continue;
 
           const correctAutoOutIso = getAutoOutIso(inDate, userShiftStr);
           const correctMs = new Date(correctAutoOutIso).getTime();
           const sweepMs = sweepDate.getTime();
           const delta = Math.abs(correctMs - sweepMs);
-          const correctDay = new Date(correctAutoOutIso).toLocaleDateString('en-CA', { timeZone: TZ });
-          const sweepDay = sweepDate.toLocaleDateString('en-CA', { timeZone: TZ });
-          const inDay = inDate.toLocaleDateString('en-CA', { timeZone: TZ });
-          if (delta <= 16 * 3600000 || correctDay === sweepDay || inDay === sweepDay) {
-            if (!best || delta < best.delta) {
-              best = { correctAutoOutIso, delta };
-            }
+          // Ignore tiny skew; only heal clearly wrong stamps (e.g. 8am vs 8pm).
+          if (delta < 30 * 60 * 1000) continue;
+          if (delta > 16 * 3600000) continue;
+          if (!best || delta < best.delta) {
+            best = { correctAutoOutIso, correctMs, delta };
           }
         }
 
-        if (best && best.correctAutoOutIso !== sweepLog.created_at) {
+        if (best && best.correctMs !== sweepDate.getTime()) {
           await window.supabaseClient
             .from('time_logs')
             .update({ created_at: best.correctAutoOutIso })

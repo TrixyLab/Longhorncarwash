@@ -6,7 +6,7 @@ import {
   findShiftForUser,
   getAutoOutIso,
   hasForgottenClockOut,
-} from '../_shared/sweep.mjs';
+} from '../_shared/schedule.mjs';
 import { assertWebhookSecret } from '../_shared/secrets.mjs';
 
 const PUNCH_ACTIONS = ['IN', 'OUT', 'START_LUNCH', 'END_LUNCH', 'CLOCK_IN', 'CLOCK_OUT'];
@@ -36,8 +36,7 @@ Deno.serve(async (req: Request) => {
       .select('content')
       .neq('status', 'pending')
       .order('created_at', { ascending: false })
-      .limit(5);
-
+      .limit(10);
     let swept = 0;
 
     for (const u of users) {

@@ -564,23 +564,67 @@ export function getStoreCloseHour(dateStr) {
   return dow === 'Sun' ? STORE_CLOSE_HOUR_SUNDAY : STORE_CLOSE_HOUR_WEEKDAY;
 }
 
-export function getAutoOutIso(logDate, shiftStr) {
-  const TZ = 'America/Chicago';
-  const logDay = logDate.toLocaleDateString('en-CA', { timeZone: TZ });
+/**
+ * Match a schedule header to a calendar day in America/Chicago.
+ * Prefer M/D date match (safe across weeks). Weekday-only matching is only
+ * allowed when the schedule has no dated headers — otherwise "Fri" on next
+ * week's grid would steal this Friday's shift and auto-sweep at the wrong time.
+ */
+export function findScheduleDayIndex(headers, logDate, timeZone = 'America/Chicago') {
+  if (!headers?.length || !logDate) return -1;
+  const mo = parseInt(logDate.toLocaleDateString('en-US', { timeZone, month: 'numeric' }), 10);
+  const dy = parseInt(logDate.toLocaleDateString('en-US', { timeZone, day: 'numeric' }), 10);
+  const dayAbbr = logDate
+    .toLocaleDateString('en-US', { timeZone, weekday: 'short' })
+    .toUpperCase();
 
-  if (shiftStr) {
-    const shiftTimes = parseShiftTimes(shiftStr);
-    if (shiftTimes) {
-      let targetDay = logDay;
-      if (shiftTimes.isOvernight) {
-        const d = new Date(`${logDay}T12:00:00Z`);
-        d.setUTCDate(d.getUTCDate() + 1);
-        targetDay = d.toISOString().split('T')[0];
-      }
-      return getChicagoIsoString(targetDay, shiftTimes.end.hour, shiftTimes.end.minute, 0, 0);
+  const list = headers.map((h) => (h == null ? '' : h.toString()));
+  const datedIdx = list.findIndex((hStr) => {
+    const m = hStr.match(/(\d{1,2})\/(\d{1,2})/);
+    return !!(m && parseInt(m[1], 10) === mo && parseInt(m[2], 10) === dy);
+  });
+  if (datedIdx >= 0) return datedIdx;
+
+  const anyDated = list.some((hStr) => /\d{1,2}\/\d{1,2}/.test(hStr));
+  if (anyDated) return -1;
+
+  return list.findIndex((hStr) => hStr.toUpperCase().startsWith(dayAbbr));
+}
+
+/**
+ * Resolve an employee's shift string for the day of `logDate` from recent
+ * schedule rows. Schedules are expected newest-first. Once a schedule whose
+ * headers cover that calendar day is found and lists the employee, that cell
+ * wins — even when OFF/blank — so we never fall through to another week's Fri.
+ */
+export function findShiftForUser(schedules, employeeName, logDate, timeZone = 'America/Chicago') {
+  if (!schedules?.length || !employeeName || !logDate) return null;
+  const targetName = employeeName.trim().toLowerCase();
+  if (!targetName) return null;
+
+  for (const sched of schedules) {
+    try {
+      const parsed = typeof sched.content === 'string' ? JSON.parse(sched.content) : sched.content;
+      if (!parsed) continue;
+      const dayIdx = findScheduleDayIndex(parsed.headers || [], logDate, timeZone);
+      if (dayIdx < 0) continue;
+
+      const myRow = (parsed.rows || []).find(
+        (r) => r.employee?.trim().toLowerCase() === targetName,
+      );
+      if (!myRow) continue;
+
+      return myRow.shifts?.[dayIdx] || null;
+    } catch {
+      // ignore bad schedule JSON
     }
   }
+  return null;
+}
 
+function storeCloseAutoOutIso(logDate) {
+  const TZ = 'America/Chicago';
+  const logDay = logDate.toLocaleDateString('en-CA', { timeZone: TZ });
   const inHour = parseInt(
     logDate.toLocaleTimeString('en-US', { timeZone: TZ, hour: 'numeric', hour12: false }),
     10,
@@ -589,22 +633,16 @@ export function getAutoOutIso(logDate, shiftStr) {
     logDate.toLocaleTimeString('en-US', { timeZone: TZ, minute: 'numeric' }),
     10,
   );
-
   const closeHour = getStoreCloseHour(logDay);
   let targetDay = logDay;
   let outHour;
   let outMin;
 
   if (inHour < closeHour) {
-    const plus8 = inHour + 8;
-    if (plus8 < closeHour) {
-      outHour = plus8;
-      outMin = inMin;
-    } else {
-      // Cap at store close (8pm Mon–Sat / 6pm Sun), not an arbitrary 7pm.
-      outHour = closeHour;
-      outMin = 0;
-    }
+    // No schedule (or unparseable / already-ended cell): close at store hours.
+    // Do NOT use clock-in+8 — a 6am open punch would land at 2pm.
+    outHour = closeHour;
+    outMin = 0;
   } else {
     outHour = (inHour + 8) % 24;
     outMin = inMin;
@@ -618,6 +656,39 @@ export function getAutoOutIso(logDate, shiftStr) {
   return getChicagoIsoString(targetDay, outHour, outMin, 0, 0);
 }
 
+export function getAutoOutIso(logDate, shiftStr) {
+  const TZ = 'America/Chicago';
+  const logDay = logDate.toLocaleDateString('en-CA', { timeZone: TZ });
+  const inMs = logDate.getTime();
+
+  if (shiftStr) {
+    const shiftTimes = parseShiftTimes(shiftStr);
+    if (shiftTimes) {
+      let targetDay = logDay;
+      if (shiftTimes.isOvernight) {
+        const d = new Date(`${logDay}T12:00:00Z`);
+        d.setUTCDate(d.getUTCDate() + 1);
+        targetDay = d.toISOString().split('T')[0];
+      }
+      const scheduledIso = getChicagoIsoString(
+        targetDay,
+        shiftTimes.end.hour,
+        shiftTimes.end.minute,
+        0,
+        0,
+      );
+      // Never stamp an OUT before the open IN (e.g. afternoon cover on a
+      // morning-only cell like 7-2, or a late re-clock after scheduled end).
+      if (new Date(scheduledIso).getTime() > inMs) {
+        return scheduledIso;
+      }
+      return storeCloseAutoOutIso(logDate);
+    }
+  }
+
+  return storeCloseAutoOutIso(logDate);
+}
+
 export function hasForgottenClockOut(logDate, shiftStr, now = new Date()) {
   const elapsedMs = now.getTime() - logDate.getTime();
   const elapsedHours = elapsedMs / (1000 * 60 * 60);
@@ -627,14 +698,38 @@ export function hasForgottenClockOut(logDate, shiftStr, now = new Date()) {
   const autoOutIso = getAutoOutIso(logDate, shiftStr);
   const autoOutTime = new Date(autoOutIso).getTime();
   const GRACE_MS = 2 * 60 * 60 * 1000;
+  const scheduled = shiftStr ? parseShiftTimes(shiftStr) : null;
 
   if (now.getTime() >= autoOutTime + GRACE_MS) {
     return true;
   }
 
-  if (elapsedHours >= 14) return true;
+  // 14h hard cap only when there is no parseable scheduled end — otherwise a
+  // 6am IN on a 7-8 shift would sweep at exactly 8pm and skip the 2h grace.
+  if (!scheduled && elapsedHours >= 14) return true;
 
   return false;
+}
+
+/**
+ * Pick the open IN that a deleted System Auto-Sweep OUT closed: latest IN-like
+ * punch at or before the OUT. Avoids attaching AUTO_SWEEP_CLEARED to a newer
+ * next-day IN inside a ±20h window.
+ */
+export function pickOpenInCreatedAtForSweepOut(inLogs, deletedOutCreatedAt) {
+  const outMs = new Date(deletedOutCreatedAt).getTime();
+  if (!Number.isFinite(outMs)) return null;
+  let best = null;
+  let bestMs = -Infinity;
+  for (const log of inLogs || []) {
+    const t = new Date(log.created_at).getTime();
+    if (!Number.isFinite(t) || t > outMs) continue;
+    if (t >= bestMs) {
+      bestMs = t;
+      best = log.created_at;
+    }
+  }
+  return best;
 }
 
 // --- CSV Download Helper ---

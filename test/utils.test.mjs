@@ -12,6 +12,9 @@ import {
   getChicagoIsoString,
   getAutoOutIso,
   hasForgottenClockOut,
+  findScheduleDayIndex,
+  findShiftForUser,
+  pickOpenInCreatedAtForSweepOut,
   getStartOfWeek,
   getBiweeklyWeeks,
   getDistanceInMeters,
@@ -191,10 +194,92 @@ test('getAutoOutIso: unscheduled weekday fallback caps at 8pm store close', () =
   assert.equal(iso, '2026-07-28T01:00:00.000Z'); // 8:00 PM CDT
 });
 
+test('getAutoOutIso: unscheduled early morning does NOT use clock-in+8 (2pm)', () => {
+  // Regression: missing schedule + ~6am IN used to stamp System Auto-Sweep at 2pm
+  // while the employee was still scheduled till 8pm.
+  const clockIn = new Date('2026-07-31T11:00:00Z'); // Fri 6:00 AM CDT
+  const iso = getAutoOutIso(clockIn, null);
+  assert.equal(iso, '2026-08-01T01:00:00.000Z'); // 8:00 PM CDT Jul 31
+});
+
+test('getAutoOutIso: never stamps OUT before the open IN', () => {
+  // Afternoon cover while the cell still says morning 7-2.
+  const clockIn = new Date('2026-07-31T20:00:00Z'); // Fri 3:00 PM CDT
+  const iso = getAutoOutIso(clockIn, '7-2');
+  assert.equal(iso, '2026-08-01T01:00:00.000Z'); // store close 8pm, not 2pm before IN
+});
+
+test('hasForgottenClockOut: scheduled shift keeps 2h grace (no 14h bypass)', () => {
+  const clockIn = new Date('2026-07-31T11:00:00Z'); // Fri 6:00 AM CDT
+  const shiftStr = '7-8'; // end 8pm CDT = 2026-08-01T01:00:00Z
+  // Exactly at scheduled end — still inside grace
+  assert.equal(hasForgottenClockOut(clockIn, shiftStr, new Date('2026-08-01T01:00:00Z')), false);
+  // 2h past end — forgotten
+  assert.equal(hasForgottenClockOut(clockIn, shiftStr, new Date('2026-08-01T03:05:00Z')), true);
+});
+
+test('pickOpenInCreatedAtForSweepOut: ignores IN after the deleted OUT', () => {
+  const outAt = '2026-07-30T01:00:00.000Z'; // Wed 8pm CDT
+  const ins = [
+    { created_at: '2026-07-30T12:00:00.000Z' }, // next morning — must not win
+    { created_at: '2026-07-29T18:00:00.000Z' }, // real open IN
+    { created_at: '2026-07-29T14:00:00.000Z' },
+  ];
+  assert.equal(pickOpenInCreatedAtForSweepOut(ins, outAt), '2026-07-29T18:00:00.000Z');
+});
+
 test('getAutoOutIso: unscheduled Sunday fallback caps at 6pm store close', () => {
   const clockIn = new Date('2026-07-26T18:00:00Z'); // Sun 1:00 PM CDT
   const iso = getAutoOutIso(clockIn, null);
   assert.equal(iso, '2026-07-26T23:00:00.000Z'); // 6:00 PM CDT
+});
+
+test('findScheduleDayIndex: prefers M/D over bare weekday across weeks', () => {
+  const friJul31 = new Date('2026-07-31T18:00:00Z'); // Fri Jul 31 CDT afternoon
+  const headersThisWeek = ['Wed 7/29', 'Thu 7/30', 'Fri 7/31', 'Sat 8/1', 'Sun 8/2', 'Mon 8/3', 'Tue 8/4'];
+  const headersNextWeek = ['Wed 8/5', 'Thu 8/6', 'Fri 8/7', 'Sat 8/8', 'Sun 8/9', 'Mon 8/10', 'Tue 8/11'];
+  assert.equal(findScheduleDayIndex(headersThisWeek, friJul31), 2);
+  assert.equal(findScheduleDayIndex(headersNextWeek, friJul31), -1);
+});
+
+test('findShiftForUser: does not steal next week Friday morning end for this Friday', () => {
+  const friJul31 = new Date('2026-07-31T18:00:00Z');
+  const schedules = [
+    {
+      content: JSON.stringify({
+        headers: ['Wed 8/5', 'Thu 8/6', 'Fri 8/7', 'Sat 8/8', 'Sun 8/9', 'Mon 8/10', 'Tue 8/11'],
+        rows: [{ employee: 'Alex', shifts: ['OFF', 'OFF', '7-2', 'OFF', 'OFF', 'OFF', 'OFF'] }],
+      }),
+    },
+    {
+      content: JSON.stringify({
+        headers: ['Wed 7/29', 'Thu 7/30', 'Fri 7/31', 'Sat 8/1', 'Sun 8/2', 'Mon 8/3', 'Tue 8/4'],
+        rows: [{ employee: 'Alex', shifts: ['OFF', 'OFF', '1-8', 'OFF', 'OFF', 'OFF', 'OFF'] }],
+      }),
+    },
+  ];
+  // Old bug: weekday startsWith("Fri") matched Fri 8/7 first → "7-2" → auto-out 2pm.
+  assert.equal(findShiftForUser(schedules, 'Alex', friJul31), '1-8');
+  assert.equal(getAutoOutIso(friJul31, findShiftForUser(schedules, 'Alex', friJul31)), '2026-08-01T01:00:00.000Z');
+});
+
+test('findShiftForUser: OFF on the matching week does not fall through to last week', () => {
+  const friJul31 = new Date('2026-07-31T18:00:00Z');
+  const schedules = [
+    {
+      content: JSON.stringify({
+        headers: ['Wed 7/29', 'Thu 7/30', 'Fri 7/31', 'Sat 8/1', 'Sun 8/2', 'Mon 8/3', 'Tue 8/4'],
+        rows: [{ employee: 'Alex', shifts: ['OFF', 'OFF', 'OFF', 'OFF', 'OFF', 'OFF', 'OFF'] }],
+      }),
+    },
+    {
+      content: JSON.stringify({
+        headers: ['Wed 7/22', 'Thu 7/23', 'Fri 7/24', 'Sat 7/25', 'Sun 7/26', 'Mon 7/27', 'Tue 7/28'],
+        rows: [{ employee: 'Alex', shifts: ['OFF', 'OFF', '7-2', 'OFF', 'OFF', 'OFF', 'OFF'] }],
+      }),
+    },
+  ];
+  assert.equal(findShiftForUser(schedules, 'Alex', friJul31), 'OFF');
 });
 
 test('buildAutoSweepClearedRow: places marker one second after the open IN', () => {

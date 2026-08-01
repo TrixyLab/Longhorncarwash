@@ -10,6 +10,7 @@ import {
   SYSTEM_AUTO_SWEEP_LABEL,
   AUTO_SWEEP_CLEARED_ACTION,
   buildAutoSweepClearedRow,
+  pickOpenInCreatedAtForSweepOut,
   confirmAppDialog,
 } from './utils.js';
 
@@ -1132,8 +1133,8 @@ function exportMonthlyCsv() {
 async function insertAutoSweepClearedMarker(deletedOut) {
   const IN_LIKE = ['IN', 'CLOCK_IN', 'END_LUNCH', 'START_LUNCH'];
   const sweepDate = new Date(deletedOut.created_at);
+  // Look back only — never attach the clear marker to a newer next-day IN.
   const windowStart = new Date(sweepDate.getTime() - 20 * 3600000).toISOString();
-  const windowEnd = new Date(sweepDate.getTime() + 20 * 3600000).toISOString();
 
   const { data: ins } = await window.supabaseClient
     .from('time_logs')
@@ -1141,11 +1142,11 @@ async function insertAutoSweepClearedMarker(deletedOut) {
     .eq('user_id', deletedOut.user_id)
     .in('action', IN_LIKE)
     .gte('created_at', windowStart)
-    .lte('created_at', windowEnd)
+    .lte('created_at', deletedOut.created_at)
     .order('created_at', { ascending: false })
     .limit(1);
 
-  const inAt = ins?.[0]?.created_at || deletedOut.created_at;
+  const inAt = pickOpenInCreatedAtForSweepOut(ins, deletedOut.created_at) || deletedOut.created_at;
   await window.supabaseClient
     .from('time_logs')
     .insert(buildAutoSweepClearedRow(deletedOut.user_id, inAt));

@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../context/AuthContext';
 import { colors, spacing, radius, font } from '../../theme';
 import { TimeLog, User, ActionType } from '../../types';
 
@@ -45,6 +46,7 @@ interface EmployeeRow {
 }
 
 export function TimesheetScreen() {
+  const { user } = useAuth();
   const [rows, setRows] = useState<EmployeeRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedEmployee, setSelectedEmployee] = useState<EmployeeRow | null>(null);
@@ -104,17 +106,17 @@ export function TimesheetScreen() {
               editedBy.includes('System Auto-Sweep');
 
             // Marker first so a concurrent web/server sweep cannot recreate the OUT.
+            // Look back only — never attach the clear marker to a newer next-day IN.
             if (isAutoSweepOut) {
               const sweepDate = new Date(log.created_at);
               const windowStart = new Date(sweepDate.getTime() - 20 * 3600000).toISOString();
-              const windowEnd = new Date(sweepDate.getTime() + 20 * 3600000).toISOString();
               const { data: ins, error: inErr } = await supabase
                 .from('time_logs')
                 .select('created_at')
                 .eq('user_id', log.user_id)
                 .in('action', ['IN', 'CLOCK_IN', 'END_LUNCH', 'START_LUNCH'])
                 .gte('created_at', windowStart)
-                .lte('created_at', windowEnd)
+                .lte('created_at', log.created_at)
                 .order('created_at', { ascending: false })
                 .limit(1);
               if (inErr) throw inErr;
@@ -142,20 +144,20 @@ export function TimesheetScreen() {
             loadTimesheet();
           } catch (err: any) {
             Alert.alert('Delete failed', err?.message || 'Could not delete this punch. Try again.');
-          }
-        },
+          }        },
       },
     ]);
   }
 
   async function addLog() {
     if (!selectedEmployee || !newTime) { Alert.alert('Error', 'Enter a time.'); return; }
+    const manager = user?.name ?? 'Manager';
     setAddingLog(true);
     const { error } = await supabase.from('time_logs').insert({
       user_id: selectedEmployee.user.id,
       action: newAction,
       created_at: new Date(newTime).toISOString(),
-      edited_by_manager: true,
+      edited_by_manager: manager,
     });
     setAddingLog(false);
     if (error) { Alert.alert('Error', 'Could not add log.'); return; }
@@ -165,7 +167,7 @@ export function TimesheetScreen() {
       user_id: selectedEmployee.user.id,
       action: newAction as any,
       created_at: new Date(newTime).toISOString(),
-      edited_by_manager: true,
+      edited_by_manager: manager,
     };
     const updatedLogs = [...selectedEmployee.logs, newLogItem];
     setSelectedEmployee({ ...selectedEmployee, logs: updatedLogs, hours: calcHours(updatedLogs) });

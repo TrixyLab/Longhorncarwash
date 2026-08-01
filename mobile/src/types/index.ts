@@ -11,7 +11,7 @@ export interface TimeLog {
   user_id: string;
   action: 'IN' | 'OUT' | 'START_LUNCH' | 'END_LUNCH' | 'CLOCK_IN' | 'CLOCK_OUT' | 'TIMESHEET_APPROVED';
   created_at: string;
-  edited_by_manager: boolean;
+  edited_by_manager: string | boolean | null;
   punch_lat?: number;
   punch_lon?: number;
   punch_accuracy?: number;
