@@ -8,6 +8,7 @@ import {
   getAutoOutIso,
   hasForgottenClockOut,
   findShiftForUser,
+  isSafeAutoSweepOutInsert,
   getPunchTransitionError,
   getMissedPunchRequestError,
   SYSTEM_AUTO_SWEEP_LABEL,
@@ -1086,6 +1087,17 @@ export function init() {
               if (!stillOpen) continue;
 
               const autoOutIso = getAutoOutIso(logDate, userShiftStr);
+
+              // Refuse backdated OUTs that sit before punches already on the
+              // timesheet (e.g. stale 8am sweep after today's 11am clock-in).
+              const { data: afterOpen } = await window.supabaseClient
+                .from('time_logs')
+                .select('action, created_at')
+                .eq('user_id', u.id)
+                .in('action', PUNCH_ACTIONS)
+                .gt('created_at', log.created_at)
+                .limit(20);
+              if (!isSafeAutoSweepOutInsert(log.created_at, autoOutIso, afterOpen)) continue;
 
               await window.supabaseClient.from('time_logs').insert({
                 user_id: u.id,

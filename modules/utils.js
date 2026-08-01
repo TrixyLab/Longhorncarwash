@@ -712,6 +712,25 @@ export function hasForgottenClockOut(logDate, shiftStr, now = new Date()) {
 }
 
 /**
+ * Guard before inserting a backdated System Auto-Sweep OUT.
+ * Rejects stamps at/before the open IN, and rejects inserts that would land
+ * BEFORE an already-recorded later punch (e.g. OUT at 8am when they already
+ * clocked IN at 11am for today's shift — that only spams Telegram).
+ */
+export function isSafeAutoSweepOutInsert(openInCreatedAt, autoOutIso, laterPunches = []) {
+  const inMs = new Date(openInCreatedAt).getTime();
+  const outMs = new Date(autoOutIso).getTime();
+  if (!Number.isFinite(inMs) || !Number.isFinite(outMs)) return false;
+  if (outMs <= inMs) return false;
+  for (const punch of laterPunches || []) {
+    const t = new Date(punch.created_at).getTime();
+    if (!Number.isFinite(t)) continue;
+    if (t > inMs && t > outMs) return false;
+  }
+  return true;
+}
+
+/**
  * Pick the open IN that a deleted System Auto-Sweep OUT closed: latest IN-like
  * punch at or before the OUT. Avoids attaching AUTO_SWEEP_CLEARED to a newer
  * next-day IN inside a ±20h window.

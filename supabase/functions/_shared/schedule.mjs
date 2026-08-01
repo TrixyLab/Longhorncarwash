@@ -286,3 +286,17 @@ export function hasForgottenClockOut(logDate, shiftStr, now = new Date()) {
   if (!scheduled && elapsedHours >= 14) return true;
   return false;
 }
+
+/** Keep in sync with modules/utils.js isSafeAutoSweepOutInsert. */
+export function isSafeAutoSweepOutInsert(openInCreatedAt, autoOutIso, laterPunches = []) {
+  const inMs = new Date(openInCreatedAt).getTime();
+  const outMs = new Date(autoOutIso).getTime();
+  if (!Number.isFinite(inMs) || !Number.isFinite(outMs)) return false;
+  if (outMs <= inMs) return false;
+  for (const punch of laterPunches || []) {
+    const t = new Date(punch.created_at).getTime();
+    if (!Number.isFinite(t)) continue;
+    if (t > inMs && t > outMs) return false;
+  }
+  return true;
+}

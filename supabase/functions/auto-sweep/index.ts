@@ -6,6 +6,7 @@ import {
   findShiftForUser,
   getAutoOutIso,
   hasForgottenClockOut,
+  isSafeAutoSweepOutInsert,
 } from '../_shared/schedule.mjs';
 import { assertWebhookSecret } from '../_shared/secrets.mjs';
 
@@ -80,6 +81,15 @@ Deno.serve(async (req: Request) => {
       if (!stillOpen) continue;
 
       const autoOutIso = getAutoOutIso(logDate, userShiftStr);
+      const { data: afterOpen } = await sb
+        .from('time_logs')
+        .select('action, created_at')
+        .eq('user_id', u.id)
+        .in('action', PUNCH_ACTIONS)
+        .gt('created_at', log.created_at)
+        .limit(20);
+      if (!isSafeAutoSweepOutInsert(log.created_at, autoOutIso, afterOpen)) continue;
+
       const { error: insertErr } = await sb.from('time_logs').insert({
         user_id: u.id,
         action: 'OUT',

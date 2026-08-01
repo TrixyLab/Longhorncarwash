@@ -14,6 +14,7 @@ import {
   hasForgottenClockOut,
   findScheduleDayIndex,
   findShiftForUser,
+  isSafeAutoSweepOutInsert,
   pickOpenInCreatedAtForSweepOut,
   getStartOfWeek,
   getBiweeklyWeeks,
@@ -226,6 +227,18 @@ test('pickOpenInCreatedAtForSweepOut: ignores IN after the deleted OUT', () => {
     { created_at: '2026-07-29T14:00:00.000Z' },
   ];
   assert.equal(pickOpenInCreatedAtForSweepOut(ins, outAt), '2026-07-29T18:00:00.000Z');
+});
+
+test('isSafeAutoSweepOutInsert: blocks OUT before open IN or before later punches', () => {
+  const openIn = '2026-08-01T16:00:00.000Z'; // Sat 11am CDT
+  const bad8am = '2026-08-01T13:00:00.000Z'; // Sat 8am CDT — before the IN
+  const good8pm = '2026-08-02T01:00:00.000Z'; // Sat 8pm CDT
+  assert.equal(isSafeAutoSweepOutInsert(openIn, bad8am, []), false);
+  assert.equal(isSafeAutoSweepOutInsert(openIn, good8pm, []), true);
+  // Xzaveon case: stale 8am out after a real 11am clock-in already on the sheet
+  const friIn = '2026-07-31T15:00:00.000Z';
+  const satIn = { created_at: '2026-08-01T16:00:15.000Z' };
+  assert.equal(isSafeAutoSweepOutInsert(friIn, bad8am, [satIn]), false);
 });
 
 test('getAutoOutIso: unscheduled Sunday fallback caps at 6pm store close', () => {
