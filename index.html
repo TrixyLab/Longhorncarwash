@@ -1042,17 +1042,17 @@
                       <div>
                         <h4 style="margin: 0; color: var(--text);">Network / WiFi Lock</h4>
                         <p style="color: var(--text-muted); font-size: 0.85rem; margin: 5px 0 0 0;">Only allow clock-ins
-                          from the shop's network (IP address check).</p>
+                          from the shop's network (public IP check). Use "Set to Current IP" while on shop WiFi — not a private LAN address like 192.168.x.x.</p>
                       </div>
                       <div style="display: flex; align-items: center; gap: 10px;">
                         <span id="wifi-lock-status-text"
-                          style="font-weight: bold; color: var(--success); font-size: 0.9rem;">Enabled</span>
-                        <button id="btn-toggle-wifi-lock" class="btn-danger"
-                          style="padding: 6px 12px; border-radius: 8px; border: none; cursor: pointer; font-size: 0.8rem;">Disable</button>
+                          style="font-weight: bold; color: var(--text-muted); font-size: 0.9rem;">Disabled</span>
+                        <button id="btn-toggle-wifi-lock" class="btn-success"
+                          style="padding: 6px 12px; border-radius: 8px; border: none; cursor: pointer; font-size: 0.8rem;">Enable</button>
                       </div>
                     </div>
                     <div style="display: flex; gap: 10px; align-items: center;">
-                      <input type="text" id="wifi-ip-input" class="input-field" placeholder="e.g. 192.168.1.1"
+                      <input type="text" id="wifi-ip-input" class="input-field" placeholder="e.g. 47.161.142.182"
                         style="max-width: 200px; margin-bottom: 0;" />
                       <button id="btn-get-current-ip" class="btn-ghost"
                         style="padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border);">Set to Current

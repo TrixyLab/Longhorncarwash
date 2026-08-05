@@ -1,4 +1,4 @@
-import { state, showToast, saveSettingRobust } from './utils.js';
+import { state, showToast, saveSettingRobust, isPrivateOrLocalIp } from './utils.js';
 
 // Expose a promise that resolves once remote settings have been loaded into
 // state, so punch flows can wait for it instead of racing the initial fetch.
@@ -513,21 +513,23 @@ export function init() {
     });
   }
 
-  // Get Current IP
+  // Get Current IP — must be run while connected to shop WiFi; stores the
+  // public WAN IP that punches will be compared against (not a LAN address).
   if (btnGetCurrentIp) {
     btnGetCurrentIp.addEventListener('click', async () => {
       try {
-        showToast('Fetching your IP address...', 'success');
-        const res = await fetch('https://api.ipify.org?format=json');
+        showToast('Fetching your public IP address...', 'success');
+        const res = await fetch('https://api4.ipify.org?format=json');
+        if (!res.ok) throw new Error(`ipify HTTP ${res.status}`);
         const data = await res.json();
         if (data && data.ip) {
           if (wifiIpInput) wifiIpInput.value = data.ip;
-          showToast('IP address populated! Click Save IP to apply.', 'success');
+          showToast('Public IP populated! Click Save IP to apply.', 'success');
         } else {
           showToast('Failed to parse IP address.', 'error');
         }
       } catch (err) {
-        showToast('Failed to fetch IP address.', 'error');
+        showToast('Failed to fetch public IP address.', 'error');
       }
     });
   }
@@ -538,6 +540,16 @@ export function init() {
       const ip = (wifiIpInput ? wifiIpInput.value : '').trim();
       if (!ip) {
         showToast('Please enter an IP address.', 'error');
+        return;
+      }
+      // The lock compares against the device's public WAN IP. A private LAN
+      // address can never match, which previously made WiFi lock look broken.
+      const first = ip.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean)[0];
+      if (first && isPrivateOrLocalIp(first)) {
+        showToast(
+          'That looks like a private LAN IP. Use "Set to Current IP" while on shop WiFi to capture the public address.',
+          'error',
+        );
         return;
       }
       try {

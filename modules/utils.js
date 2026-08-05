@@ -33,6 +33,11 @@ export const state = {
   GEOFENCE_ENABLED: true,
   ANTI_BUDDY_ENABLED: true,
   EARLY_CLOCKIN_BLOCK_ENABLED: true,
+  // WiFi / network lock — compares the device's public WAN IP (via ipify) to
+  // the shop's configured public IP. Defaults off; restored here after they
+  // were accidentally dropped from state during a utils.js restore.
+  WIFI_LOCK_ENABLED: false,
+  WIFI_IP_ADDRESS: '',
   customPayrollFormat: { current: '', next: '' },
   comm_single_good: 50,
   comm_single_better: 100,
@@ -763,6 +768,66 @@ export function downloadCsv(csvContent, filename) {
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+}
+
+// --- WiFi / network lock helpers ---
+// The lock compares the device's *public* WAN IP (fetched from ipify) against
+// the shop IP saved in settings. Private LAN addresses (192.168.x.x etc.) can
+// never match, which is why the settings UI warns against them.
+
+/** True for IPv4/IPv6 addresses that are not globally routable. */
+export function isPrivateOrLocalIp(ip) {
+  if (!ip || typeof ip !== 'string') return false;
+  const v = ip.trim().toLowerCase();
+  if (!v) return false;
+  if (v === '::1' || v === '0:0:0:0:0:0:0:1') return true;
+  if (v.startsWith('fc') || v.startsWith('fd') || v.startsWith('fe80:')) return true;
+  const m = v.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  if (a === 10 || a === 127) return true;
+  if (a === 0) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return false;
+}
+
+/**
+ * Whether `currentIp` is allowed by the configured shop IP list.
+ * `allowedIps` may be a single IP or a comma/whitespace-separated list
+ * (useful when the shop has both IPv4 and IPv6 egress).
+ */
+export function isWifiIpAllowed(currentIp, allowedIps) {
+  if (!currentIp || !allowedIps) return false;
+  const current = String(currentIp).trim().toLowerCase();
+  if (!current) return false;
+  const allowed = String(allowedIps)
+    .split(/[\s,;]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  return allowed.includes(current);
+}
+
+/**
+ * Pure decision helper for the WiFi lock gate. Returns null when the punch
+ * should proceed, or a human-readable error string when it should be blocked.
+ */
+export function getWifiLockFailureReason({ enabled, allowedIp, currentIp, fetchFailed }) {
+  if (!enabled) return null;
+  const configured = allowedIp != null ? String(allowedIp).trim() : '';
+  if (!configured) {
+    return 'WiFi lock is enabled but no shop IP is configured. Ask a manager to set it in Settings.';
+  }
+  if (fetchFailed) {
+    return 'Could not verify shop WiFi (network check failed). Stay on shop WiFi and try again.';
+  }
+  if (!currentIp) {
+    return 'Could not verify shop WiFi (no IP returned). Stay on shop WiFi and try again.';
+  }
+  if (isWifiIpAllowed(currentIp, configured)) return null;
+  return 'You must be connected to the shop WiFi to punch the clock.';
 }
 
 // --- Save Setting (upsert) ---
