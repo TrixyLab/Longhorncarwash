@@ -11,6 +11,7 @@ import {
   isSafeAutoSweepOutInsert,
   getPunchTransitionError,
   getMissedPunchRequestError,
+  getWifiLockFailureReason,
   SYSTEM_AUTO_SWEEP_LABEL,
   AUTO_SWEEP_CLEARED_ACTION,
 } from './utils.js';
@@ -796,16 +797,29 @@ export function init() {
     // isn't evaluated against the default (lock disabled).
     await state.settingsReady;
     if (!state.WIFI_LOCK_ENABLED) return true;
+
+    let currentIp = null;
+    let fetchFailed = false;
     try {
-      const res = await fetch('https://api.ipify.org?format=json');
+      // Prefer IPv4 so a shop that saved an IPv4 address isn't blocked when the
+      // device would otherwise prefer IPv6 via a dual-stack endpoint.
+      const res = await fetch('https://api4.ipify.org?format=json');
+      if (!res.ok) throw new Error(`ipify HTTP ${res.status}`);
       const data = await res.json();
-      if (data && data.ip && state.WIFI_IP_ADDRESS) {
-        if (data.ip.trim() === state.WIFI_IP_ADDRESS.trim()) return true;
-      }
+      currentIp = data && data.ip ? data.ip : null;
     } catch (e) {
+      fetchFailed = true;
       console.warn('IP check failed', e);
     }
-    showToast('You must be connected to the shop WiFi to punch the clock.', 'error');
+
+    const reason = getWifiLockFailureReason({
+      enabled: true,
+      allowedIp: state.WIFI_IP_ADDRESS,
+      currentIp,
+      fetchFailed,
+    });
+    if (!reason) return true;
+    showToast(reason, 'error');
     return false;
   }
 

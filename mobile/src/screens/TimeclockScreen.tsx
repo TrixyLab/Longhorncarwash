@@ -13,9 +13,12 @@ import { colors, spacing, radius, font } from '../theme';
 import { TimeLog, ActionType } from '../types';
 import { notifyManagers } from '../lib/notifications';
 
-const CAR_WASH_LAT = 33.06734;
-const CAR_WASH_LON = -97.29654;
-const ALLOWED_RADIUS = 100;
+const DEFAULT_LAT = 33.06734;
+const DEFAULT_LON = -97.29654;
+const DEFAULT_RADIUS_M = 100;
+// GPS accuracy (how fuzzy the reading is) is independent of the geofence radius.
+// Mirror the web app so a tight radius doesn't reject normal indoor phone GPS.
+const MAX_GPS_ACCURACY_METERS = 150;
 const QUEUE_KEY = '@lcw_punch_queue';
 const TZ = 'America/Chicago';
 const PUNCH_ACTIONS = ['IN', 'OUT', 'START_LUNCH', 'END_LUNCH', 'CLOCK_IN', 'CLOCK_OUT'];
@@ -29,6 +32,18 @@ const MISSED_PUNCH_OPTIONS: { action: ActionType; label: string }[] = [
 // How far back a missed-punch request may reach (mirrors the web validator).
 const MISSED_PUNCH_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
+type GeofenceConfig = {
+  enabled: boolean;
+  lat: number;
+  lon: number;
+  radiusM: number;
+};
+
+type WifiLockConfig = {
+  enabled: boolean;
+  ipAddress: string;
+};
+
 function haversine(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371000;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -36,6 +51,33 @@ function haversine(lat1: number, lon1: number, lat2: number, lon2: number): numb
   const a = Math.sin(dLat / 2) ** 2
     + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/** Whether currentIp matches the configured shop IP (comma/space separated list ok). */
+function isWifiIpAllowed(currentIp: string, allowedIps: string): boolean {
+  const current = currentIp.trim().toLowerCase();
+  if (!current) return false;
+  const allowed = allowedIps
+    .split(/[\s,;]+/)
+    .map(s => s.trim().toLowerCase())
+    .filter(Boolean);
+  return allowed.includes(current);
+}
+
+function wifiLockFailureReason(cfg: WifiLockConfig, currentIp: string | null, fetchFailed: boolean): string | null {
+  if (!cfg.enabled) return null;
+  const configured = cfg.ipAddress.trim();
+  if (!configured) {
+    return 'WiFi lock is enabled but no shop IP is configured. Ask a manager to set it in Settings.';
+  }
+  if (fetchFailed) {
+    return 'Could not verify shop WiFi (network check failed). Stay on shop WiFi and try again.';
+  }
+  if (!currentIp) {
+    return 'Could not verify shop WiFi (no IP returned). Stay on shop WiFi and try again.';
+  }
+  if (isWifiIpAllowed(currentIp, configured)) return null;
+  return 'You must be connected to the shop WiFi to punch the clock.';
 }
 
 function calcHours(logs: TimeLog[]): number {
@@ -91,7 +133,13 @@ export function TimeclockScreen() {
   const [lastAction, setLastAction] = useState<TimeLog['action'] | null>(null);
   const [loading, setLoading] = useState(true);
   const [punching, setPunching] = useState(false);
-  const [geofenceEnabled, setGeofenceEnabled] = useState(true);
+  const [geofence, setGeofence] = useState<GeofenceConfig>({
+    enabled: true,
+    lat: DEFAULT_LAT,
+    lon: DEFAULT_LON,
+    radiusM: DEFAULT_RADIUS_M,
+  });
+  const [wifiLock, setWifiLock] = useState<WifiLockConfig>({ enabled: false, ipAddress: '' });
 
   const [showMissedModal, setShowMissedModal] = useState(false);
   const [missedAction, setMissedAction] = useState<ActionType>('OUT');
@@ -122,8 +170,33 @@ export function TimeclockScreen() {
   }, []);
 
   async function loadSettings() {
-    const { data } = await supabase.from('settings').select('value').eq('id', 'geofence_enabled').single();
-    setGeofenceEnabled(data?.value !== 'false');
+    const { data } = await supabase
+      .from('settings')
+      .select('id, value')
+      .in('id', [
+        'geofence_enabled',
+        'geofence_lat',
+        'geofence_lon',
+        'geofence_radius',
+        'wifi_lock_enabled',
+        'wifi_ip_address',
+      ]);
+
+    const map = new Map((data ?? []).map(row => [row.id as string, row.value as string]));
+    const lat = parseFloat(map.get('geofence_lat') ?? '');
+    const lon = parseFloat(map.get('geofence_lon') ?? '');
+    const radius = parseInt(map.get('geofence_radius') ?? '', 10);
+
+    setGeofence({
+      enabled: map.get('geofence_enabled') !== 'false',
+      lat: Number.isFinite(lat) ? lat : DEFAULT_LAT,
+      lon: Number.isFinite(lon) ? lon : DEFAULT_LON,
+      radiusM: Number.isFinite(radius) && radius > 0 ? radius : DEFAULT_RADIUS_M,
+    });
+    setWifiLock({
+      enabled: map.get('wifi_lock_enabled') === 'true',
+      ipAddress: (map.get('wifi_ip_address') ?? '').trim(),
+    });
   }
 
   const loadLogs = useCallback(async () => {
@@ -163,8 +236,27 @@ export function TimeclockScreen() {
     } catch { /* network error, leave queue */ }
   }
 
+  async function checkWifiLock(): Promise<boolean> {
+    if (!wifiLock.enabled) return true;
+    let currentIp: string | null = null;
+    let fetchFailed = false;
+    try {
+      // api4 forces IPv4 so a shop that saved an IPv4 address isn't blocked by IPv6.
+      const res = await fetch('https://api4.ipify.org?format=json');
+      if (!res.ok) throw new Error(`ipify HTTP ${res.status}`);
+      const data = await res.json();
+      currentIp = data?.ip ? String(data.ip) : null;
+    } catch {
+      fetchFailed = true;
+    }
+    const reason = wifiLockFailureReason(wifiLock, currentIp, fetchFailed);
+    if (!reason) return true;
+    Alert.alert('Shop WiFi Required', reason);
+    return false;
+  }
+
   async function checkLocation(): Promise<{ lat: number; lon: number; accuracy: number } | null> {
-    if (!geofenceEnabled) return null;
+    if (!geofence.enabled) return null;
     const { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('Location Required', 'Please allow location access to clock in/out.');
@@ -172,24 +264,35 @@ export function TimeclockScreen() {
     }
     const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
     const { latitude, longitude, accuracy } = pos.coords;
-    if (accuracy && accuracy > ALLOWED_RADIUS) {
-      Alert.alert('Weak GPS', `GPS signal too weak (~${Math.round(accuracy * 3.28084)} ft). Step outside and try again.`);
+    const accuracyM = accuracy ?? 0;
+    // Decouple GPS accuracy from geofence radius (same fix as the web app).
+    const accuracyLimit = Math.max(geofence.radiusM, MAX_GPS_ACCURACY_METERS);
+    if (accuracyM > accuracyLimit) {
+      Alert.alert(
+        'Weak GPS',
+        `GPS signal too weak (~${Math.round(accuracyM * 3.28084)} ft). Step outside and try again.`,
+      );
       return null;
     }
-    const dist = haversine(CAR_WASH_LAT, CAR_WASH_LON, latitude, longitude);
-    if (dist > ALLOWED_RADIUS) {
+    const dist = haversine(geofence.lat, geofence.lon, latitude, longitude);
+    // Credit the reading's own accuracy margin — allow if the employee could
+    // plausibly be within the radius.
+    if (dist - accuracyM > geofence.radiusM) {
       Alert.alert('Too Far Away', `You are ${Math.round(dist * 3.28084)} feet from the site.`);
       return null;
     }
-    return { lat: latitude, lon: longitude, accuracy: accuracy ?? 0 };
+    return { lat: latitude, lon: longitude, accuracy: accuracyM };
   }
 
   async function punch(action: ActionType) {
     if (!user || punching) return;
     setPunching(true);
     try {
+      const wifiOk = await checkWifiLock();
+      if (!wifiOk) { setPunching(false); return; }
+
       const location = await checkLocation();
-      if (geofenceEnabled && location === null) { setPunching(false); return; }
+      if (geofence.enabled && location === null) { setPunching(false); return; }
 
       const payload: Record<string, unknown> = {
         user_id: user.id,

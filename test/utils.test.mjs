@@ -25,6 +25,9 @@ import {
   AUTO_SWEEP_CLEARED_ACTION,
   formatShiftTimes,
   normalizeScheduleCellValue,
+  isPrivateOrLocalIp,
+  isWifiIpAllowed,
+  getWifiLockFailureReason,
 } from '../modules/utils.js';
 
 const log = (action, t) => ({ action, created_at: t });
@@ -420,5 +423,76 @@ test('getMissedPunchRequestError: rejects requests older than 30 days', () => {
   assert.equal(
     getMissedPunchRequestError('OUT', old, now),
     'Requests are limited to the last 30 days. Ask a manager to add older punches.',
+  );
+});
+
+test('isPrivateOrLocalIp: detects common private and loopback ranges', () => {
+  assert.equal(isPrivateOrLocalIp('192.168.1.1'), true);
+  assert.equal(isPrivateOrLocalIp('10.0.0.5'), true);
+  assert.equal(isPrivateOrLocalIp('172.16.0.1'), true);
+  assert.equal(isPrivateOrLocalIp('127.0.0.1'), true);
+  assert.equal(isPrivateOrLocalIp('169.254.1.1'), true);
+  assert.equal(isPrivateOrLocalIp('::1'), true);
+  assert.equal(isPrivateOrLocalIp('47.161.142.182'), false);
+  assert.equal(isPrivateOrLocalIp('8.8.8.8'), false);
+});
+
+test('isWifiIpAllowed: matches trimmed and list-configured IPs', () => {
+  assert.equal(isWifiIpAllowed('47.161.142.182', '47.161.142.182'), true);
+  assert.equal(isWifiIpAllowed(' 47.161.142.182 ', '47.161.142.182'), true);
+  assert.equal(isWifiIpAllowed('47.161.142.182', '1.2.3.4, 47.161.142.182'), true);
+  assert.equal(isWifiIpAllowed('47.161.142.182', '1.2.3.4'), false);
+  assert.equal(isWifiIpAllowed('', '47.161.142.182'), false);
+  assert.equal(isWifiIpAllowed('47.161.142.182', ''), false);
+});
+
+test('getWifiLockFailureReason: allows when disabled or IP matches', () => {
+  assert.equal(
+    getWifiLockFailureReason({
+      enabled: false,
+      allowedIp: '1.2.3.4',
+      currentIp: '9.9.9.9',
+      fetchFailed: false,
+    }),
+    null,
+  );
+  assert.equal(
+    getWifiLockFailureReason({
+      enabled: true,
+      allowedIp: '47.161.142.182',
+      currentIp: '47.161.142.182',
+      fetchFailed: false,
+    }),
+    null,
+  );
+});
+
+test('getWifiLockFailureReason: blocks misconfig, fetch failure, and mismatch', () => {
+  assert.match(
+    getWifiLockFailureReason({
+      enabled: true,
+      allowedIp: '',
+      currentIp: null,
+      fetchFailed: false,
+    }) || '',
+    /no shop IP/i,
+  );
+  assert.match(
+    getWifiLockFailureReason({
+      enabled: true,
+      allowedIp: '47.161.142.182',
+      currentIp: null,
+      fetchFailed: true,
+    }) || '',
+    /network check failed/i,
+  );
+  assert.match(
+    getWifiLockFailureReason({
+      enabled: true,
+      allowedIp: '47.161.142.182',
+      currentIp: '1.2.3.4',
+      fetchFailed: false,
+    }) || '',
+    /shop WiFi/i,
   );
 });
