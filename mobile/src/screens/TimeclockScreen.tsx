@@ -13,9 +13,13 @@ import { colors, spacing, radius, font } from '../theme';
 import { TimeLog, ActionType } from '../types';
 import { notifyManagers } from '../lib/notifications';
 
+// Fallback geofence used until the shop's configured values load from settings.
 const CAR_WASH_LAT = 33.06734;
 const CAR_WASH_LON = -97.29654;
 const ALLOWED_RADIUS = 100;
+// A reading fuzzier than this is unusable regardless of the geofence radius
+// (matches the web kiosk); keeps a tight radius from rejecting normal GPS.
+const MAX_GPS_ACCURACY = 150;
 const QUEUE_KEY = '@lcw_punch_queue';
 const TZ = 'America/Chicago';
 const PUNCH_ACTIONS = ['IN', 'OUT', 'START_LUNCH', 'END_LUNCH', 'CLOCK_IN', 'CLOCK_OUT'];
@@ -92,6 +96,11 @@ export function TimeclockScreen() {
   const [loading, setLoading] = useState(true);
   const [punching, setPunching] = useState(false);
   const [geofenceEnabled, setGeofenceEnabled] = useState(true);
+  // Geofence origin/radius come from the same settings the kiosk reads, so both
+  // hold employees to the same rule instead of a hardcoded 100 m.
+  const [geofenceRadius, setGeofenceRadius] = useState(ALLOWED_RADIUS);
+  const [carWashLat, setCarWashLat] = useState(CAR_WASH_LAT);
+  const [carWashLon, setCarWashLon] = useState(CAR_WASH_LON);
 
   const [showMissedModal, setShowMissedModal] = useState(false);
   const [missedAction, setMissedAction] = useState<ActionType>('OUT');
@@ -122,8 +131,18 @@ export function TimeclockScreen() {
   }, []);
 
   async function loadSettings() {
-    const { data } = await supabase.from('settings').select('value').eq('id', 'geofence_enabled').single();
-    setGeofenceEnabled(data?.value !== 'false');
+    const { data } = await supabase
+      .from('settings')
+      .select('id, value')
+      .in('id', ['geofence_enabled', 'geofence_radius', 'geofence_lat', 'geofence_lon']);
+    const map = new Map((data ?? []).map((r: { id: string; value: string }) => [r.id, r.value]));
+    setGeofenceEnabled(map.get('geofence_enabled') !== 'false');
+    const radius = parseFloat(map.get('geofence_radius') ?? '');
+    if (!isNaN(radius)) setGeofenceRadius(radius);
+    const lat = parseFloat(map.get('geofence_lat') ?? '');
+    if (!isNaN(lat)) setCarWashLat(lat);
+    const lon = parseFloat(map.get('geofence_lon') ?? '');
+    if (!isNaN(lon)) setCarWashLon(lon);
   }
 
   const loadLogs = useCallback(async () => {
@@ -172,12 +191,16 @@ export function TimeclockScreen() {
     }
     const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
     const { latitude, longitude, accuracy } = pos.coords;
-    if (accuracy && accuracy > ALLOWED_RADIUS) {
+    // Gate weak GPS on its own threshold (never stricter than the radius) rather
+    // than conflating accuracy with distance.
+    const accuracyLimit = Math.max(geofenceRadius, MAX_GPS_ACCURACY);
+    if (accuracy && accuracy > accuracyLimit) {
       Alert.alert('Weak GPS', `GPS signal too weak (~${Math.round(accuracy * 3.28084)} ft). Step outside and try again.`);
       return null;
     }
-    const dist = haversine(CAR_WASH_LAT, CAR_WASH_LON, latitude, longitude);
-    if (dist > ALLOWED_RADIUS) {
+    const dist = haversine(carWashLat, carWashLon, latitude, longitude);
+    // Credit the reading's accuracy margin, so a fuzzy-but-plausible fix passes.
+    if (dist - (accuracy ?? 0) > geofenceRadius) {
       Alert.alert('Too Far Away', `You are ${Math.round(dist * 3.28084)} feet from the site.`);
       return null;
     }
