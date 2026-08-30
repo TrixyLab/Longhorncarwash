@@ -68,8 +68,14 @@ export function switchView(view) {
     viewTimeclock.classList.add('active');
     navTimeclock.classList.add('active');
     resetTimeclockState();
-    const _savedSession = localStorage.getItem('lcw_web_user');
-    const _savedUser = _savedSession ? JSON.parse(_savedSession) : null;
+    let _savedUser = null;
+    try {
+      const _savedSession = localStorage.getItem('lcw_web_user');
+      if (_savedSession) _savedUser = JSON.parse(_savedSession);
+    } catch (e) {
+      // Corrupted session payload — treat as logged out rather than breaking nav.
+      _savedUser = null;
+    }
     if (!_savedUser || _savedUser.role === 'Employee') logoutManager();
     logoutEmployeePortal();
   } else if (view === 'manager') {
