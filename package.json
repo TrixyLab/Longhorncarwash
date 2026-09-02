@@ -22,7 +22,7 @@
     "electron": "^43.0.0",
     "electron-builder": "^26.15.3",
     "electron-squirrel-startup": "^1.0.0",
-    "eslint": "^10.6.0",
+    "eslint": "^10.9.1",
     "globals": "^17.7.0",
     "prettier": "^3.9.4"
   },
